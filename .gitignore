@@ -7,10 +7,13 @@
 # 部署脚本
 scripts/build-and-deploy-*.sh
 scripts/deploy-*.sh
+scripts/install-*.sh
+scripts/nas-auto-deploy.sh
 
 # 设计文档和规划文档
 *-plan.md
 *-design.md
+DEPLOYMENT.LOCAL.md
 docs/
 
 # IDE
