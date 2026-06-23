@@ -1,0 +1,65 @@
+# 环境配置
+.env.local
+.env.dev
+.env.prod
+.env
+
+# 部署脚本
+scripts/build-and-deploy-*.sh
+scripts/deploy-*.sh
+
+# 设计文档和规划文档
+*-plan.md
+*-design.md
+docs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+
+# 虚拟环境
+venv/
+ENV/
+env/
+
+# 临时文件
+*.tmp
+*.log
+*.pid
+
+# Docker
+docker-compose.override.yml
+
+# NAS/本地部署
+/reports
+*.tar
+*.tar.gz
+.claude/
+artifacts/

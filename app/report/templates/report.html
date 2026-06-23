@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>market-lab 数据日报 {{ report_date }}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
+         background: #f5f6f8; color: #1f2329; }
+  header { background: #1f2329; color: #fff; padding: 14px 24px; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .sub { font-size: 12px; color: #aeb3bd; margin-top: 4px; }
+  .wrap { padding: 20px 24px; max-width: 1100px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px,1fr));
+           gap: 14px; margin-bottom: 24px; }
+  .card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card .label { font-size: 13px; color: #8a8f99; }
+  .card .value { font-size: 24px; font-weight: 600; margin-top: 6px; }
+  section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .bar { height: 10px; background: #e8eaed; border-radius: 5px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: #2f7cf6; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; cursor: default; }
+  th { color: #8a8f99; font-weight: 500; cursor: pointer; user-select: none; }
+  th:hover { color: #2f7cf6; }
+  .muted { color: #8a8f99; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>market-lab 数据日报</h1>
+  <div class="sub" id="genAt"></div>
+</header>
+<div class="wrap">
+  <div class="cards" id="cards"></div>
+
+  <section>
+    <h2>采集进度</h2>
+    <div class="bar"><i id="progressBar"></i></div>
+    <div class="muted" id="progressText" style="margin-top:8px"></div>
+  </section>
+
+  <section>
+    <h2>失败 Top 股票(点列头可排序)</h2>
+    <table>
+      <thead><tr><th data-k="stock_code">股票代码</th><th data-k="cnt">失败次数</th></tr></thead>
+      <tbody id="failBody"></tbody>
+    </table>
+  </section>
+</div>
+
+<script>const REPORT_DATA = {{ data_json|safe }};</script>
+<script>
+const D = REPORT_DATA;
+document.getElementById('genAt').textContent = '生成时间 ' + D.generated_at;
+
+const cards = [
+  ['股票总数', D.stocks.total],
+  ['正常股票', D.stocks.normal],
+  ['日K 行数', D.tables.daily.rows],
+  ['日K 最新', D.tables.daily.latest_date || '-'],
+  ['周K 行数', D.tables.weekly.rows],
+  ['月K 行数', D.tables.monthly.rows],
+  ['分钟K 行数', D.minute.rows],
+  ['分钟K 采样天数', D.minute.sampled_days],
+];
+document.getElementById('cards').innerHTML = cards.map(
+  ([l,v]) => `<div class="card"><div class="label">${l}</div><div class="value">${v}</div></div>`
+).join('');
+
+document.getElementById('progressBar').style.width = D.tasks.progress + '%';
+const parts = Object.entries(D.tasks.counts).map(([k,v]) => `${k}: ${v}`).join('  ·  ');
+document.getElementById('progressText').textContent =
+  `进度 ${D.tasks.progress}%  ·  总任务 ${D.tasks.total}  ·  ${parts}`;
+
+let failData = D.fail_top.slice();
+let sortKey = 'cnt', sortAsc = false;
+function renderFail() {
+  failData.sort((a,b) => {
+    const x=a[sortKey], y=b[sortKey];
+    const r = (x>y?1:x<y?-1:0);
+    return sortAsc ? r : -r;
+  });
+  document.getElementById('failBody').innerHTML = failData.map(
+    t => `<tr><td>${t.stock_code}</td><td>${t.cnt}</td></tr>`
+  ).join('') || '<tr><td colspan="2" class="muted">无失败任务</td></tr>';
+}
+document.querySelectorAll('th[data-k]').forEach(th => {
+  th.onclick = () => {
+    const k = th.dataset.k;
+    if (k === sortKey) sortAsc = !sortAsc; else { sortKey = k; sortAsc = false; }
+    renderFail();
+  };
+});
+renderFail();
+</script>
+</body>
+</html>
