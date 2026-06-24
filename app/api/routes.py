@@ -177,80 +177,113 @@ def trigger_report(db: Session = Depends(get_session)):
 
 
 @router.get("/dashboard/details")
-def dashboard_details(db: Session = Depends(get_session)):
-    """dashboard 详细数据:股票明细、任务统计、数据分布等。"""
-    # 股票明细
+def dashboard_details(
+    page: int = Query(1, ge=1, description="页码,从 1 开始"),
+    size: int = Query(50, ge=1, le=500, description="每页股票数"),
+    db: Session = Depends(get_session),
+):
+    """dashboard 详细数据:股票明细、任务统计、数据分布等。
+
+    股票明细分页返回;kline/minute 统计仅覆盖当前页的 stock_code。
+    K线行数统计用 GROUP BY 一次性聚合,避免逐股票 N+1 查询。
+    """
+    # 股票明细(分页)
+    total_stocks = db.execute(text("SELECT COUNT(*) FROM stocks")).scalar() or 0
     stocks = db.execute(
-        text("SELECT stock_code, stock_name, status FROM stocks ORDER BY stock_code")
+        text(
+            "SELECT stock_code, stock_name, status FROM stocks "
+            "ORDER BY stock_code LIMIT :limit OFFSET :offset"
+        ),
+        {"limit": size, "offset": (page - 1) * size},
     ).mappings().all()
     stocks_list = [dict(s) for s in stocks]
+    page_codes = [s["stock_code"] for s in stocks_list]
 
-    # 各股票的 K 线行数
     kline_stats = {}
-    for stock in stocks_list:
-        code = stock["stock_code"]
-        daily = db.execute(
-            text("SELECT COUNT(*) FROM daily_kline WHERE stock_code=:code"),
-            {"code": code}
-        ).scalar() or 0
-        weekly = db.execute(
-            text("SELECT COUNT(*) FROM weekly_kline WHERE stock_code=:code"),
-            {"code": code}
-        ).scalar() or 0
-        monthly = db.execute(
-            text("SELECT COUNT(*) FROM monthly_kline WHERE stock_code=:code"),
-            {"code": code}
-        ).scalar() or 0
-        daily_min_date = db.execute(
-            text("SELECT MIN(trading_date) FROM daily_kline WHERE stock_code=:code"),
-            {"code": code}
-        ).scalar()
-        daily_max_date = db.execute(
-            text("SELECT MAX(trading_date) FROM daily_kline WHERE stock_code=:code"),
-            {"code": code}
-        ).scalar()
-        kline_stats[code] = {
-            "daily_rows": daily,
-            "weekly_rows": weekly,
-            "monthly_rows": monthly,
-            "daily_min_date": daily_min_date.isoformat() if daily_min_date else None,
-            "daily_max_date": daily_max_date.isoformat() if daily_max_date else None,
-        }
-
-    # 各股票分钟K 行数
     minute_stats = {}
-    for stock in stocks_list:
-        code = stock["stock_code"]
-        table = minute_table_of(code)
-        rows = db.execute(
-            text(f"SELECT COUNT(*) FROM {table} WHERE stock_code=:code"),
-            {"code": code}
-        ).scalar() or 0
-        min_date = db.execute(
-            text(f"SELECT MIN(DATE(minute_time)) FROM {table} WHERE stock_code=:code"),
-            {"code": code}
-        ).scalar()
-        max_date = db.execute(
-            text(f"SELECT MAX(DATE(minute_time)) FROM {table} WHERE stock_code=:code"),
-            {"code": code}
-        ).scalar()
-        minute_stats[code] = {
-            "rows": rows,
-            "min_date": min_date.isoformat() if min_date else None,
-            "max_date": max_date.isoformat() if max_date else None,
+    if page_codes:
+        codes_param = bindparam("codes", expanding=True)
+
+        # 日K:一次聚合 COUNT/MIN/MAX
+        daily_rows = db.execute(
+            text(
+                "SELECT stock_code, COUNT(*) AS cnt, "
+                "MIN(trading_date) AS min_d, MAX(trading_date) AS max_d "
+                "FROM daily_kline WHERE stock_code IN :codes GROUP BY stock_code"
+            ).bindparams(codes_param),
+            {"codes": page_codes},
+        ).mappings().all()
+        daily_map = {r["stock_code"]: r for r in daily_rows}
+
+        # 周K / 月K:各一次聚合 COUNT
+        weekly_map = {
+            r["stock_code"]: r["cnt"]
+            for r in db.execute(
+                text(
+                    "SELECT stock_code, COUNT(*) AS cnt FROM weekly_kline "
+                    "WHERE stock_code IN :codes GROUP BY stock_code"
+                ).bindparams(bindparam("codes", expanding=True)),
+                {"codes": page_codes},
+            ).mappings().all()
+        }
+        monthly_map = {
+            r["stock_code"]: r["cnt"]
+            for r in db.execute(
+                text(
+                    "SELECT stock_code, COUNT(*) AS cnt FROM monthly_kline "
+                    "WHERE stock_code IN :codes GROUP BY stock_code"
+                ).bindparams(bindparam("codes", expanding=True)),
+                {"codes": page_codes},
+            ).mappings().all()
         }
 
-    # 任务统计(按 stock_code + data_type)
-    tasks_detail = db.execute(
-        text("""
-        SELECT stock_code, data_type, adjust, status, COUNT(*) as cnt,
-               MAX(finished_at) as last_finish, MAX(last_error) as latest_error
-        FROM fetch_task
-        GROUP BY stock_code, data_type, adjust, status
-        ORDER BY stock_code, data_type
-        """)
-    ).mappings().all()
+        for code in page_codes:
+            d = daily_map.get(code)
+            kline_stats[code] = {
+                "daily_rows": d["cnt"] if d else 0,
+                "weekly_rows": weekly_map.get(code, 0),
+                "monthly_rows": monthly_map.get(code, 0),
+                "daily_min_date": d["min_d"].isoformat() if d and d["min_d"] else None,
+                "daily_max_date": d["max_d"].isoformat() if d and d["max_d"] else None,
+            }
+
+        # 分钟K:按所属分表分组,每张涉及的表查一次
+        codes_by_table: dict[str, list[str]] = {}
+        for code in page_codes:
+            codes_by_table.setdefault(minute_table_of(code), []).append(code)
+        for table, codes in codes_by_table.items():
+            rows = db.execute(
+                text(
+                    f"SELECT stock_code, COUNT(*) AS cnt, "
+                    f"MIN(DATE(minute_time)) AS min_d, MAX(DATE(minute_time)) AS max_d "
+                    f"FROM {table} WHERE stock_code IN :codes GROUP BY stock_code"
+                ).bindparams(bindparam("codes", expanding=True)),
+                {"codes": codes},
+            ).mappings().all()
+            for r in rows:
+                minute_stats[r["stock_code"]] = {
+                    "rows": r["cnt"],
+                    "min_date": r["min_d"].isoformat() if r["min_d"] else None,
+                    "max_date": r["max_d"].isoformat() if r["max_d"] else None,
+                }
+        for code in page_codes:
+            minute_stats.setdefault(code, {"rows": 0, "min_date": None, "max_date": None})
+
+    # 任务统计(按 stock_code + data_type,仅当前页 code)
     tasks_by_stock = {}
+    tasks_detail = []
+    if page_codes:
+        tasks_detail = db.execute(
+            text("""
+            SELECT stock_code, data_type, adjust, status, COUNT(*) as cnt,
+                   MAX(finished_at) as last_finish, MAX(last_error) as latest_error
+            FROM fetch_task
+            WHERE stock_code IN :codes
+            GROUP BY stock_code, data_type, adjust, status
+            ORDER BY stock_code, data_type
+            """).bindparams(bindparam("codes", expanding=True)),
+            {"codes": page_codes},
+        ).mappings().all()
     for t in tasks_detail:
         code = t["stock_code"]
         if code not in tasks_by_stock:
@@ -286,6 +319,9 @@ def dashboard_details(db: Session = Depends(get_session)):
     ).mappings().all()
 
     return {
+        "page": page,
+        "size": size,
+        "total": total_stocks,
         "stocks": stocks_list,
         "kline_stats": kline_stats,
         "minute_stats": minute_stats,
