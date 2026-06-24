@@ -9,6 +9,8 @@ from fastapi import FastAPI
 
 from app.api.routes import router as api_router
 from app.config import settings
+from app.db.migrations import run_migrations
+from app.db.session import get_session
 from app.scheduler.scheduler import build_scheduler
 from app.web.routes import router as web_router
 
@@ -21,6 +23,13 @@ _scheduler = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
+    # 应用启动时执行数据库迁移
+    db = next(get_session())
+    try:
+        run_migrations(db)
+    finally:
+        db.close()
+
     _scheduler = build_scheduler()
     _scheduler.start()
     logging.getLogger(__name__).info("APScheduler started")
