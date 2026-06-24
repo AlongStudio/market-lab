@@ -40,6 +40,10 @@
   .tabs { display: flex; gap: 0; margin-bottom: 12px; border-bottom: 1px solid #eee; }
   .tab { padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent; color: #8a8f99; }
   .tab.active { border-bottom-color: #2f7cf6; color: #2f7cf6; font-weight: 500; }
+  .pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; }
+  .pager button { padding: 4px 10px; }
+  .pager button:disabled { background: #c9d2dd; cursor: not-allowed; }
+  .pager .info { color: #8a8f99; }
 </style>
 </head>
 <body>
@@ -63,6 +67,11 @@
       </tr></thead>
       <tbody id="stockBody"></tbody>
     </table>
+    <div class="pager">
+      <button id="prevPage" onclick="changePage(-1)">上一页</button>
+      <span class="info" id="pageInfo">-</span>
+      <button id="nextPage" onclick="changePage(1)">下一页</button>
+    </div>
   </section>
 
   <section>
@@ -156,8 +165,21 @@ async function loadProgress() {
     `进度 ${d.progress}%  ·  总任务 ${d.total}  ·  ${parts}`;
 }
 
-async function loadStocks() {
-  const d = await api('/api/dashboard/details');
+const PAGE_SIZE = 50;
+let curPage = 1;
+let totalStocks = 0;
+
+// 股票分布、最近成功/失败共用同一次 details 请求,避免重复打这个聚合接口
+async function loadDetails() {
+  const d = await api(`/api/dashboard/details?page=${curPage}&size=${PAGE_SIZE}`);
+  totalStocks = d.total || 0;
+  renderStocks(d);
+  renderSuccess(d.recent_success || []);
+  renderRecentFail(d.recent_fail || []);
+  renderPager();
+}
+
+function renderStocks(d) {
   const rows = d.stocks.map(stock => {
     const code = stock.stock_code;
     const stats = d.kline_stats[code] || {};
@@ -180,9 +202,8 @@ async function loadStocks() {
   document.getElementById('stockBody').innerHTML = rows || '<tr><td colspan="8" class="muted">无股票数据</td></tr>';
 }
 
-async function loadSuccess() {
-  const d = await api('/api/dashboard/details');
-  const rows = d.recent_success.map(t => `<tr>
+function renderSuccess(list) {
+  const rows = list.map(t => `<tr>
     <td>${t.stock_code}</td>
     <td>${t.data_type}</td>
     <td>${t.adjust || '-'}</td>
@@ -191,9 +212,8 @@ async function loadSuccess() {
   document.getElementById('successBody').innerHTML = rows || '<tr><td colspan="4" class="muted">无成功任务</td></tr>';
 }
 
-async function loadRecentFail() {
-  const d = await api('/api/dashboard/details');
-  const rows = d.recent_fail.map(t => `<tr>
+function renderRecentFail(list) {
+  const rows = list.map(t => `<tr>
     <td>${t.stock_code}</td>
     <td>${t.data_type}</td>
     <td>${t.adjust || '-'}</td>
@@ -202,6 +222,22 @@ async function loadRecentFail() {
     <td class="muted">${formatTime(t.finished_at)}</td>
   </tr>`).join('');
   document.getElementById('recentFailBody').innerHTML = rows || '<tr><td colspan="6" class="muted">无失败任务</td></tr>';
+}
+
+function renderPager() {
+  const totalPages = Math.max(1, Math.ceil(totalStocks / PAGE_SIZE));
+  document.getElementById('pageInfo').textContent =
+    `第 ${curPage} / ${totalPages} 页  ·  共 ${totalStocks} 只`;
+  document.getElementById('prevPage').disabled = curPage <= 1;
+  document.getElementById('nextPage').disabled = curPage >= totalPages;
+}
+
+function changePage(delta) {
+  const totalPages = Math.max(1, Math.ceil(totalStocks / PAGE_SIZE));
+  const next = curPage + delta;
+  if (next < 1 || next > totalPages) return;
+  curPage = next;
+  loadDetails();
 }
 
 async function loadAllFailed() {
@@ -237,7 +273,7 @@ async function retryAll() {
 
 async function refresh() {
   try {
-    await Promise.all([loadCards(), loadProgress(), loadStocks(), loadSuccess(), loadRecentFail(), loadAllFailed()]);
+    await Promise.all([loadCards(), loadProgress(), loadDetails(), loadAllFailed()]);
   } catch (e) {
     console.error(e);
   }
