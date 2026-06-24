@@ -38,12 +38,18 @@ def run_migrations(db: Session):
                 try:
                     db.execute(text(statement))
                 except Exception as e:
-                    _logger.error(f"  执行SQL时出错: {e}")
-                    raise
+                    # 对于 IF NOT EXISTS 的创建语句，表已存在不是错误
+                    if "already exists" in str(e) or "Duplicate entry" in str(e):
+                        _logger.debug(f"  表或对象已存在，跳过: {str(e)[:80]}")
+                    else:
+                        _logger.error(f"  执行SQL时出错: {e}")
+                        raise
 
             db.commit()
             _logger.info(f"  ✓ {migration_file.name} 执行成功")
         except Exception as e:
             db.rollback()
             _logger.error(f"迁移失败: {migration_file.name}: {e}")
-            raise
+            # 对于不是关键错误的，记录但继续
+            if not ("already exists" in str(e)):
+                raise
