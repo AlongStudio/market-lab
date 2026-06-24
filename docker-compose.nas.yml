@@ -1,0 +1,40 @@
+# ── market-lab NAS 生产环境部署 ────────────────────────────────────
+#
+# 用法（NAS 上）：
+#   cd /volume1/docker/market-lab
+#   sudo /usr/local/bin/docker compose -f docker-compose.nas.yml --env-file .env.nas up -d
+#
+# 或通过 deploy-to-nas.sh 自动调用（推荐）。
+#
+# 前置依赖：
+#   - .env.nas 已存在并包含 DB_*、HTTP_PORT、REPORTS_DIR 等变量
+#   - market_lab 数据库已初始化（V1/V2 迁移已执行）
+#
+# 设计原则：
+#   - 容器内 uvicorn 固定监听 3000（见 Dockerfile EXPOSE 3000）
+#   - 宿主端口由 .env.nas 的 HTTP_PORT 控制，默认 3000
+#   - 宿主 ↔ 容器 端口对等映射，避免错位
+# ───────────────────────────────────────────────────────────────────
+
+services:
+  market-lab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: market-lab:latest
+    container_name: market-lab
+    restart: unless-stopped
+    env_file:
+      - .env.nas
+    ports:
+      # 宿主 HTTP_PORT → 容器 3000（注意容器内固定 3000，与 Dockerfile/uvicorn 一致）
+      - "${HTTP_PORT:-3000}:3000"
+    volumes:
+      # 部署报告/数据报告输出目录
+      - "${REPORTS_DIR:-/volume1/docker/market-lab-reports}:/reports"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:3000/docs',timeout=3).status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
