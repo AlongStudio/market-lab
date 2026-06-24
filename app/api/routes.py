@@ -86,15 +86,15 @@ def list_stocks(
     keyword: Optional[str] = None,
     db: Session = Depends(get_session),
 ):
-    sql = "SELECT stock_code, stock_name, market, industry, status FROM stocks WHERE 1=1"
+    sql = "SELECT code AS stock_code, name AS stock_name, market, status FROM stocks WHERE 1=1"
     params: dict = {}
     if market:
         sql += " AND market=:market"
         params["market"] = market
     if keyword:
-        sql += " AND (stock_code LIKE :kw OR stock_name LIKE :kw)"
+        sql += " AND (code LIKE :kw OR name LIKE :kw)"
         params["kw"] = f"%{keyword}%"
-    sql += " ORDER BY stock_code LIMIT 500"
+    sql += " ORDER BY code LIMIT 500"
     rows = db.execute(text(sql), params).mappings().all()
     return {"data": [dict(r) for r in rows]}
 
@@ -181,7 +181,7 @@ def dashboard_details(db: Session = Depends(get_session)):
     """dashboard 详细数据:股票明细、任务统计、数据分布等。"""
     # 股票明细
     stocks = db.execute(
-        text("SELECT stock_code, stock_name, status FROM stocks ORDER BY stock_code")
+        text("SELECT code AS stock_code, name AS stock_name, status FROM stocks ORDER BY code")
     ).mappings().all()
     stocks_list = [dict(s) for s in stocks]
 
