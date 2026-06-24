@@ -30,17 +30,31 @@ def run_migrations(db: Session):
             _logger.info(f"执行迁移: {migration_file.name}")
             sql_content = migration_file.read_text(encoding='utf-8')
 
-            # 分句执行（按 ; 分割）
-            for statement in sql_content.split(';'):
-                statement = statement.strip()
-                if not statement or statement.startswith('--'):
+            # 分句执行 - 更好地处理多行SQL
+            statements = []
+            current = []
+            for line in sql_content.split('\n'):
+                line = line.rstrip()
+                # 跳过注释和空行
+                if not line or line.strip().startswith('--'):
                     continue
+                current.append(line)
+                # 以 ; 结尾则一条语句完成
+                if line.rstrip().endswith(';'):
+                    statement = '\n'.join(current).strip()
+                    if statement and not statement.startswith('--'):
+                        statements.append(statement)
+                    current = []
+
+            # 执行所有收集到的语句
+            for statement in statements:
                 try:
                     db.execute(text(statement))
                 except Exception as e:
                     # 对于 IF NOT EXISTS 的创建语句，表已存在不是错误
-                    if "already exists" in str(e) or "Duplicate entry" in str(e):
-                        _logger.debug(f"  表或对象已存在，跳过: {str(e)[:80]}")
+                    error_msg = str(e)
+                    if "already exists" in error_msg or "Duplicate entry" in error_msg:
+                        _logger.debug(f"  表或对象已存在，跳过")
                     else:
                         _logger.error(f"  执行SQL时出错: {e}")
                         raise
