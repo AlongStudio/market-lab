@@ -36,23 +36,45 @@ def _backfill_start() -> date:
     return date.today() - timedelta(days=365 * settings.BACKFILL_YEARS)
 
 
-def generate_backfill(db: Session) -> int:
-    """为全 A 股 × {日K三口径/周K/月K} 生成回填任务。返回插入条数。
+def _date_chunks(start: date, end: date, chunk_years: int) -> list[tuple[date, date]]:
+    """把 [start, end] 按 chunk_years 年切成若干闭区间,相邻区间不重叠。
 
+    chunk_years<=0 时退化为单一整区间(不分片)。
+    """
+    if chunk_years <= 0:
+        return [(start, end)]
+    chunks = []
+    seg_start = start
+    while seg_start <= end:
+        # 本片末尾 = seg_start + chunk_years 年 - 1 天,且不超过 end
+        try:
+            next_start = seg_start.replace(year=seg_start.year + chunk_years)
+        except ValueError:  # 2/29 等无效日期,退到 3/1
+            next_start = date(seg_start.year + chunk_years, 3, 1)
+        seg_end = min(next_start - timedelta(days=1), end)
+        chunks.append((seg_start, seg_end))
+        seg_start = next_start
+    return chunks
+
+
+def generate_backfill(db: Session) -> int:
+    """为全 A 股 × {日K三口径/周K/月K} 生成回填任务,按 BACKFILL_CHUNK_YEARS 年分片。
+
+    单任务只覆盖一段年区间,失败时仅需重试该片而非整段历史,降低失败成本。
     UNIQUE(stock_code,data_type,adjust,date_start,date_end) 保证幂等。
     """
     stocks = _active_stocks(db)
     if not stocks:
         return 0
-    start = _backfill_start()
-    end = date.today()
+    chunks = _date_chunks(_backfill_start(), date.today(), settings.BACKFILL_CHUNK_YEARS)
     params = []
     for code in stocks:
         for dt, adj in _BACKFILL_COMBOS:
-            params.append({
-                "stock_code": code, "data_type": dt, "adjust": adj,
-                "date_start": start, "date_end": end,
-            })
+            for seg_start, seg_end in chunks:
+                params.append({
+                    "stock_code": code, "data_type": dt, "adjust": adj,
+                    "date_start": seg_start, "date_end": seg_end,
+                })
     db.execute(_INSERT, params)
     db.commit()
     return len(params)

@@ -110,3 +110,36 @@ def requeue_failed(db: Session) -> int:
     )
     db.commit()
     return result.rowcount
+
+
+def requeue_stale_running(db: Session, stale_minutes: int) -> int:
+    """回收卡死的 RUNNING:locked_at 早于 NOW()-stale_minutes 的重置为 PENDING。
+
+    容器重启或远端假死会留下永不收尾的 RUNNING 任务,占用名额且永远不被领取。
+    retry_count+1 以免某任务反复卡死时无限重试,达到 MAX_RETRY 后自然落 FAILED。
+    """
+    result = db.execute(
+        text(
+            "UPDATE fetch_task SET status='PENDING', locked_at=NULL, "
+            "retry_count=retry_count+1, last_error='stale running reset' "
+            "WHERE status='RUNNING' "
+            "AND locked_at < NOW() - INTERVAL :mins MINUTE"
+        ),
+        {"mins": stale_minutes},
+    )
+    db.commit()
+    return result.rowcount
+
+
+def force_requeue_exhausted(db: Session) -> int:
+    """强制重置已耗尽重试(retry_count>=MAX_RETRY)的 FAILED 任务:清零 retry_count
+    重新排队。供运维在排除根因(如网络)后手动触发,避免大量任务永久冻结在 FAILED。
+    """
+    result = db.execute(
+        text("UPDATE fetch_task SET status='PENDING', locked_at=NULL, "
+             "retry_count=0, last_error=NULL "
+             "WHERE status='FAILED' AND retry_count >= :m"),
+        {"m": MAX_RETRY},
+    )
+    db.commit()
+    return result.rowcount

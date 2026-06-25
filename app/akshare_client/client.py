@@ -6,6 +6,7 @@
   绝不依赖列顺序(日K实测列序是 开-收-高-低)。
 - 返回规范化的 list[dict](裸 Python 类型),不把 DataFrame 透传给上层。
 """
+import socket
 import threading
 import time
 from datetime import date, datetime
@@ -16,6 +17,10 @@ import pandas as pd
 
 from app.config import settings
 from app.akshare_client import columns as C
+
+# akshare 底层经 requests 外呼但不暴露 timeout 参数;设全局 socket 超时,
+# 让远端假死(RemoteDisconnected 前的无响应挂起)在超时后抛异常而非无限阻塞 worker。
+socket.setdefaulttimeout(settings.AKSHARE_TIMEOUT)
 
 
 class _RateLimiter:

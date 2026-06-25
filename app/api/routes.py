@@ -153,6 +153,24 @@ def retry_failed(db: Session = Depends(get_session)):
     return {"requeued": n}
 
 
+@router.post("/tasks/requeue-stale")
+def requeue_stale(db: Session = Depends(get_session)):
+    """手动回收卡死的 RUNNING 任务(也有定时任务每 5 分钟自动跑)。"""
+    from app.config import settings
+    n = task_runner.requeue_stale_running(db, settings.STALE_RUNNING_MINUTES)
+    return {"requeued": n}
+
+
+@router.post("/tasks/force-retry-exhausted")
+def force_retry_exhausted(db: Session = Depends(get_session)):
+    """强制重置已耗尽重试(retry_count>=MAX)的 FAILED 任务,清零重试次数重新排队。
+
+    用于排除根因(如网络中断)后,把因连环失败被冻结的任务批量放回队列。
+    """
+    n = task_runner.force_requeue_exhausted(db)
+    return {"requeued": n}
+
+
 @router.get("/data/overview")
 def data_overview(db: Session = Depends(get_session)):
     out: dict = {}
