@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>market-lab 登录</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
+         background: #f5f6f8; color: #1f2329; display: flex; align-items: center;
+         justify-content: center; min-height: 100vh; }
+  .box { background: #fff; border-radius: 10px; padding: 32px; width: 320px;
+         box-shadow: 0 2px 12px rgba(0,0,0,.1); }
+  .box h1 { font-size: 20px; margin: 0 0 24px; text-align: center; }
+  label { display: block; font-size: 13px; color: #8a8f99; margin-bottom: 6px; }
+  input { width: 100%; padding: 10px 12px; border: 1px solid #dcdfe6;
+          border-radius: 6px; font-size: 14px; margin-bottom: 16px; }
+  button { width: 100%; background: #2f7cf6; color: #fff; border: 0; padding: 11px;
+           border-radius: 6px; cursor: pointer; font-size: 15px; }
+  button:hover { background: #1f6ae0; }
+  button:disabled { background: #c9d2dd; cursor: not-allowed; }
+  .err { color: #c62828; font-size: 13px; margin-bottom: 12px; min-height: 18px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>market-lab 登录</h1>
+  <div class="err" id="err"></div>
+  <form id="loginForm" onsubmit="return doLogin(event)">
+    <label>用户名</label>
+    <input id="username" type="text" autocomplete="username" autofocus>
+    <label>密码</label>
+    <input id="password" type="password" autocomplete="current-password">
+    <button id="submitBtn" type="submit">登录</button>
+  </form>
+</div>
+
+<script>
+// 已登录则直接进面板
+if (localStorage.getItem('token')) location.replace('/dashboard');
+
+async function doLogin(e) {
+  e.preventDefault();
+  const btn = document.getElementById('submitBtn');
+  const err = document.getElementById('err');
+  err.textContent = '';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value,
+      }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      err.textContent = d.detail || '登录失败';
+      btn.disabled = false;
+      return false;
+    }
+    const d = await r.json();
+    localStorage.setItem('token', d.token);
+    location.replace('/dashboard');
+  } catch (ex) {
+    err.textContent = '网络错误,请重试';
+    btn.disabled = false;
+  }
+  return false;
+}
+</script>
+</body>
+</html>

@@ -5,10 +5,12 @@
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
+from app import auth
+from app.config import settings
 from app.db.minute_shard import all_minute_tables, minute_table_of
 from app.db.session import get_session
 from app.report.generator import generate_report
@@ -28,6 +30,18 @@ _PERIOD_TABLE = {"daily": "daily_kline", "weekly": "weekly_kline", "monthly": "m
 @router.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@router.post("/login")
+def login(
+    username: str = Body(..., embed=True),
+    password: str = Body(..., embed=True),
+    db: Session = Depends(get_session),
+):
+    """校验用户名密码,签发有效期 TOKEN_TTL 的 JWT。失败返回 401。"""
+    if not auth.authenticate(db, username, password):
+        raise HTTPException(401, "用户名或密码错误")
+    return {"token": auth.issue_token(username), "ttl": settings.TOKEN_TTL}
 
 
 @router.get("/kline/{period}")
@@ -157,7 +171,6 @@ def retry_failed(db: Session = Depends(get_session)):
 @router.post("/tasks/requeue-stale")
 def requeue_stale(db: Session = Depends(get_session)):
     """手动回收卡死的 RUNNING 任务(也有定时任务每 5 分钟自动跑)。"""
-    from app.config import settings
     n = task_runner.requeue_stale_running(db, settings.STALE_RUNNING_MINUTES)
     return {"requeued": n}
 

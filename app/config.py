@@ -30,6 +30,14 @@ class Settings:
     IP_WHITELIST_ENABLED = os.getenv("IP_WHITELIST_ENABLED", "false").lower() == "true"
     IP_WHITELIST = [ip.strip() for ip in os.getenv("IP_WHITELIST", "").split(",") if ip.strip()]
 
+    # 鉴权:JWT 签名密钥(务必在 .env 设强随机值,默认值仅供本地起步)
+    AUTH_SECRET = os.getenv("AUTH_SECRET", "change-me-in-production-please")
+    # token 有效期(秒),默认 7 天;每次访问滑动续期
+    TOKEN_TTL = int(os.getenv("TOKEN_TTL", str(7 * 24 * 3600)))
+    # 启动时自动播种的初始用户(为空则不播种;已存在同名用户则跳过)
+    AUTH_INIT_USER = os.getenv("AUTH_INIT_USER", "")
+    AUTH_INIT_PASSWORD = os.getenv("AUTH_INIT_PASSWORD", "")
+
     @property
     def db_url(self) -> str:
         return (

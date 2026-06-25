@@ -8,7 +8,11 @@
   * { box-sizing: border-box; }
   body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
          background: #f5f6f8; color: #1f2329; }
-  header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px; }
+  header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px;
+           display: flex; justify-content: space-between; align-items: center; }
+  header .logout { background: transparent; border: 1px solid #5a5f66; color: #cfd3d9;
+                   padding: 5px 12px; font-size: 13px; }
+  header .logout:hover { background: #2c3138; }
   .wrap { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px,1fr));
            gap: 14px; margin-bottom: 24px; }
@@ -54,7 +58,7 @@
 </style>
 </head>
 <body>
-<header>market-lab 管理面板</header>
+<header><span>market-lab 管理面板</span><button class="logout" onclick="logout()">退出登录</button></header>
 <div class="wrap">
   <div class="cards" id="cards"></div>
 
@@ -126,11 +130,31 @@
 </div>
 
 <script>
+function getToken() { return localStorage.getItem('token') || ''; }
+
+function gotoLogin() {
+  localStorage.removeItem('token');
+  location.replace('/login');
+}
+
+// 无 token 直接回登录页,避免空跑一圈请求
+if (!getToken()) gotoLogin();
+
 async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, {
+    'Authorization': 'Bearer ' + getToken(),
+  });
   const r = await fetch(path, opts);
+  if (r.status === 401) { gotoLogin(); throw new Error('未授权'); }
+  // 滑动续期:服务端每次有效响应都回发新 token
+  const refreshed = r.headers.get('X-Refresh-Token');
+  if (refreshed) localStorage.setItem('token', refreshed);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
+
+function logout() { gotoLogin(); }
 
 function formatDate(d) {
   if (!d) return '-';
