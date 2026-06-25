@@ -1,8 +1,27 @@
 # market-lab — A 股行情数据采集服务
 
-Python FastAPI 应用，采集并存储全 A 股市场行情数据（日K/周K/月K/分钟K/复权因子）。
+Python FastAPI 应用，采集并存储全 A 股市场行情数据（日K/周K/月K/分钟K/复权因子）。同时提供 React 前端用于 K 线展示。
 
 ## 快速开始
+
+### 本地开发
+
+#### 1. 启动后端
+```bash
+# 先配置好 .env
+cd market-lab
+pip install -r requirements.txt
+python -m uvicorn app.main:app --reload --port 3000
+```
+
+#### 2. 启动前端
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+访问 http://localhost:5173/ui
 
 ### Docker 部署
 
@@ -14,10 +33,16 @@ mysql -h <DB_HOST> -u <DB_USER> -p -e "CREATE DATABASE IF NOT EXISTS market_lab 
 mysql -h <DB_HOST> -u <DB_USER> -p market_lab < migrations/V1__init_schema.sql
 mysql -h <DB_HOST> -u <DB_USER> -p market_lab < migrations/V2__minute_kline_sharding.sql
 
-# 3. 构建镜像
+# 3. 构建前端
+cd ui
+npm install
+npm run build
+cd ..
+
+# 4. 构建镜像
 docker build -t market-lab:latest .
 
-# 4. 启动容器
+# 5. 启动容器
 docker run -d \
   --name market-lab \
   -e DB_HOST=<YOUR_DB_HOST> \
@@ -34,8 +59,9 @@ docker run -d \
   -v <LOCAL_REPORTS_PATH>:/reports \
   market-lab:latest
 
-# 5. 访问应用
+# 6. 访问应用
 # 管理页面：http://<HOST>:3000/dashboard
+# K线页面：http://<HOST>:3000/ui
 # API：http://<HOST>:3000/api/tasks/summary
 ```
 
@@ -54,6 +80,13 @@ market-lab/
 │   ├── scheduler/           # APScheduler 任务调度
 │   ├── api/routes.py        # REST API 路由
 │   └── web/                 # 管理页面（Jinja2 模板）
+├── ui/                      # React 前端（新增）
+│   ├── src/
+│   │   ├── api/             # API 客户端
+│   │   ├── pages/           # 页面组件
+│   │   └── types/           # TypeScript 类型
+│   ├── vite.config.ts       # Vite 配置
+│   └── package.json
 ├── migrations/              # DB 迁移脚本
 │   ├── V1__init_schema.sql  # 7 张固定表
 │   └── V2__minute_kline_sharding.sql  # 32 张分钟K 分表

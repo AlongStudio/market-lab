@@ -5,9 +5,11 @@
 """
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import auth
 from app.api.routes import router as api_router
@@ -31,6 +33,11 @@ _PUBLIC_PATHS = {
     "/login", "/dashboard", "/docs", "/openapi.json", "/redoc", "/favicon.ico",
 }
 
+# UI 静态文件目录
+_UI_DIR = Path(__file__).parent.parent / "ui" / "dist"
+if _UI_DIR.exists():
+    _logger.info(f"UI static directory found at: {_UI_DIR}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -53,12 +60,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="market-lab", lifespan=lifespan)
 
+# 挂载 UI 静态文件(如果已构建)
+if _UI_DIR.exists():
+    app.mount("/ui", StaticFiles(directory=str(_UI_DIR), html=True), name="ui")
+    # 把 /ui/* 路径也加入公网白名单
+    _PUBLIC_PATHS.add("/ui")
+    _PUBLIC_PATHS.add("/ui/")
+
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """全局 Bearer token 鉴权 + 滑动续期。放行 _PUBLIC_PATHS。"""
     path = request.url.path
-    if path in _PUBLIC_PATHS:
+    # 放行 /ui 开头的所有路径
+    if path in _PUBLIC_PATHS or path.startswith("/ui/"):
         return await call_next(request)
 
     header = request.headers.get("authorization", "")

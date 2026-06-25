@@ -15,6 +15,7 @@ scripts/nas-auto-deploy.sh
 *-design.md
 DEPLOYMENT.LOCAL.md
 docs/
+NAS-SETUP-REQUIRED.md
 
 # IDE
 .vscode/
@@ -66,3 +67,13 @@ docker-compose.override.yml
 *.tar.gz
 .claude/
 artifacts/
+
+# UI node_modules
+ui/node_modules/
+ui/dist/
+ui/.DS_Store
+
+# 不要提交 UI 的默认示例文件
+ui/src/App.css
+ui/src/App.tsx
+ui/src/assets/
