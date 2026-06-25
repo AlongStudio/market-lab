@@ -14,7 +14,7 @@ from app.db.session import SessionLocal
 from app.report.generator import generate_report
 from app.scheduler import task_gen, task_runner
 from app.scheduler.concurrency import INTRADAY_WORKERS, OFFHOUR_WORKERS, get_policy
-from app.services import meta_service
+from app.services import meta_service, stats_service
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,16 @@ def _gen_report() -> None:
         db.close()
 
 
+def _refresh_stats() -> None:
+    """全量重算 stock_stats,供 dashboard 列表排序/筛选。"""
+    db = SessionLocal()
+    try:
+        n = stats_service.refresh_stock_stats(db)
+        logger.info("refreshed stock_stats for %d stocks", n)
+    finally:
+        db.close()
+
+
 def build_scheduler() -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone="Asia/Shanghai")
     # 执行循环:每 10s 领一批
@@ -131,6 +141,9 @@ def build_scheduler() -> BackgroundScheduler:
     sched.add_job(_requeue_stale_running, "interval", minutes=5, id="requeue_stale")
     # 耗尽重试任务每日强制重置:凌晨 03:17 低峰执行一次
     sched.add_job(_force_retry_exhausted, "cron", hour=3, minute=17, id="force_retry")
+    # 股票统计刷新:每 13 分钟全量重算(供 dashboard 列表排序/筛选)
+    sched.add_job(_refresh_stats, "interval", minutes=13, id="refresh_stats",
+                  max_instances=1, coalesce=True)
     # 每日报告:收盘后 16:30 + 凌晨回填后 09:05 各一次
     sched.add_job(_gen_report, "cron", hour=16, minute=30, id="report_pm")
     sched.add_job(_gen_report, "cron", hour=9, minute=5, id="report_am")

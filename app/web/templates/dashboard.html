@@ -44,6 +44,13 @@
   .pager button { padding: 4px 10px; }
   .pager button:disabled { background: #c9d2dd; cursor: not-allowed; }
   .pager .info { color: #8a8f99; }
+  .filters { display: flex; gap: 10px; margin-bottom: 12px; }
+  .filters input, .filters select { padding: 6px 10px; border: 1px solid #dcdfe6;
+                                     border-radius: 6px; font-size: 13px; }
+  .filters input { flex: 1; max-width: 260px; }
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { color: #2f7cf6; }
+  th.sortable .arrow { display: inline-block; width: 10px; color: #2f7cf6; }
 </style>
 </head>
 <body>
@@ -58,11 +65,24 @@
   </section>
 
   <section>
-    <h2>股票数据分布</h2>
+    <h2>股票数据分布 <span class="muted" id="statsRefreshed" style="font-weight:400"></span></h2>
+    <div class="filters">
+      <input id="filterName" type="text" placeholder="按股票名称筛选…" oninput="onFilterChange()">
+      <select id="filterStatus" onchange="onFilterChange()">
+        <option value="">全部状态</option>
+        <option value="NORMAL">NORMAL</option>
+        <option value="SUSPENDED">SUSPENDED</option>
+        <option value="DELISTED">DELISTED</option>
+      </select>
+    </div>
     <table>
       <thead><tr>
-        <th>股票代码</th><th>股票名称</th><th>状态</th>
-        <th>日K</th><th>周K</th><th>月K</th><th>分钟K</th>
+        <th class="sortable" data-sort="code" onclick="onSort('code')">股票代码<span class="arrow"></span></th>
+        <th>股票名称</th><th>状态</th>
+        <th class="sortable" data-sort="daily" onclick="onSort('daily')">日K<span class="arrow"></span></th>
+        <th class="sortable" data-sort="weekly" onclick="onSort('weekly')">周K<span class="arrow"></span></th>
+        <th class="sortable" data-sort="monthly" onclick="onSort('monthly')">月K<span class="arrow"></span></th>
+        <th class="sortable" data-sort="minute" onclick="onSort('minute')">分钟K<span class="arrow"></span></th>
         <th>日K 日期范围</th>
       </tr></thead>
       <tbody id="stockBody"></tbody>
@@ -168,15 +188,52 @@ async function loadProgress() {
 const PAGE_SIZE = 50;
 let curPage = 1;
 let totalStocks = 0;
+let curSort = 'code';
+let curOrder = 'asc';
+let filterTimer = null;
 
 // 股票分布、最近成功/失败共用同一次 details 请求,避免重复打这个聚合接口
 async function loadDetails() {
-  const d = await api(`/api/dashboard/details?page=${curPage}&size=${PAGE_SIZE}`);
+  const name = document.getElementById('filterName').value.trim();
+  const status = document.getElementById('filterStatus').value;
+  const params = new URLSearchParams({
+    page: curPage, size: PAGE_SIZE, sort: curSort, order: curOrder,
+  });
+  if (name) params.set('name', name);
+  if (status) params.set('status', status);
+  const d = await api(`/api/dashboard/details?${params}`);
   totalStocks = d.total || 0;
   renderStocks(d);
   renderSuccess(d.recent_success || []);
   renderRecentFail(d.recent_fail || []);
   renderPager();
+  renderSortArrows();
+  document.getElementById('statsRefreshed').textContent =
+    d.refreshed_at ? `（数据更新于 ${formatTime(d.refreshed_at)}）` : '';
+}
+
+function renderSortArrows() {
+  document.querySelectorAll('th.sortable').forEach(th => {
+    const arrow = th.querySelector('.arrow');
+    arrow.textContent = th.dataset.sort === curSort ? (curOrder === 'asc' ? '▲' : '▼') : '';
+  });
+}
+
+function onSort(field) {
+  if (curSort === field) {
+    curOrder = curOrder === 'asc' ? 'desc' : 'asc';
+  } else {
+    curSort = field;
+    curOrder = field === 'code' ? 'asc' : 'desc';  // 数量列默认从多到少更直觉
+  }
+  curPage = 1;
+  loadDetails();
+}
+
+function onFilterChange() {
+  // 输入防抖,避免每键一次请求
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { curPage = 1; loadDetails(); }, 400);
 }
 
 function renderStocks(d) {
@@ -190,7 +247,7 @@ function renderStocks(d) {
     return `<tr>
       <td>${code}</td>
       <td>${stock.stock_name}</td>
-      <td><span class="status-badge ${stock.status === 'normal' ? 'status-success' : 'status-pending'}">
+      <td><span class="status-badge ${stock.status === 'NORMAL' ? 'status-success' : (stock.status === 'DELISTED' ? 'status-failed' : 'status-pending')}">
         ${stock.status}</span></td>
       <td>${stats.daily_rows || 0}</td>
       <td>${stats.weekly_rows || 0}</td>
