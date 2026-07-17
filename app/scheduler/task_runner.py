@@ -113,19 +113,50 @@ def requeue_failed(db: Session) -> int:
 
 
 def requeue_stale_running(db: Session, stale_minutes: int) -> int:
-    """回收卡死的 RUNNING:locked_at 早于 NOW()-stale_minutes 的重置为 PENDING。
+    """回收卡死的 RUNNING:locked_at 早于 NOW()-stale_minutes 的任务,
+    达到 MAX_RETRY 的标记为 FAILED(不再重试),未达阈值的重置为 PENDING。
 
     容器重启或远端假死会留下永不收尾的 RUNNING 任务,占用名额且永远不被领取。
-    retry_count+1 以免某任务反复卡死时无限重试,达到 MAX_RETRY 后自然落 FAILED。
+    retry_count+1 以免某任务反复卡死时无限重试,达到 MAX_RETRY 后落 FAILED。
     """
+    # 达到重试上限的 -> FAILED(永久失败,需 force_requeue_exhausted 才会重排)
+    db.execute(
+        text(
+            "UPDATE fetch_task SET status='FAILED', locked_at=NULL, "
+            "last_error='stale running reset (retry exhausted)' "
+            "WHERE status='RUNNING' "
+            "AND retry_count >= :m - 1 "
+            "AND locked_at < NOW() - INTERVAL :mins MINUTE"
+        ),
+        {"m": MAX_RETRY, "mins": stale_minutes},
+    )
+    # 未达上限的 -> PENDING(继续重试)
     result = db.execute(
         text(
             "UPDATE fetch_task SET status='PENDING', locked_at=NULL, "
             "retry_count=retry_count+1, last_error='stale running reset' "
             "WHERE status='RUNNING' "
+            "AND retry_count < :m - 1 "
             "AND locked_at < NOW() - INTERVAL :mins MINUTE"
         ),
-        {"mins": stale_minutes},
+        {"m": MAX_RETRY, "mins": stale_minutes},
+    )
+    db.commit()
+    return result.rowcount
+
+
+def reset_running_on_startup(db: Session) -> int:
+    """容器启动时把所有残留 RUNNING 任务重置为 PENDING。
+
+    容器崩溃/重启会留下 RUNNING 状态的僵尸任务(locked_at 停在旧时间),
+    不清理的话它们永远占用名额且不会被 requeue_stale_running 及时回收
+    (要等 STALE_RUNNING_MINUTES 才触发)。启动时立即清理,快速恢复。
+    """
+    result = db.execute(
+        text(
+            "UPDATE fetch_task SET status='PENDING', locked_at=NULL "
+            "WHERE status='RUNNING'"
+        ),
     )
     db.commit()
     return result.rowcount

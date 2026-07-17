@@ -9,6 +9,7 @@ from datetime import date, datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app.akshare_client.client import _breaker
 from app.config import settings
 from app.db.session import SessionLocal
 from app.report.generator import generate_report
@@ -25,6 +26,10 @@ _pool = ThreadPoolExecutor(
 
 def _tick() -> None:
     """执行循环:按当前时段策略领一批任务并发执行(严格隔离 data_type)。"""
+    # 熔断器开启时跳过领取,避免 worker 拿到任务后必然超时卡死
+    if _breaker.state == "OPEN":
+        logger.warning("熔断器开启中,跳过本轮 tick")
+        return
     db = SessionLocal()
     try:
         today = date.today()

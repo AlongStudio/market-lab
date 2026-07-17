@@ -27,6 +27,12 @@ class Settings:
     # RUNNING 任务被判定为 stale 的锁定时长(分钟),超过则回收为 PENDING
     STALE_RUNNING_MINUTES = int(os.getenv("STALE_RUNNING_MINUTES", "30"))
 
+    # ── 熔断器 ──────────────────────────────────────────────────────
+    # 连续失败 N 次后熔断(暂停所有 akshare 外呼),避免远端不可达时 worker 逐个卡死
+    CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("CIRCUIT_FAILURE_THRESHOLD", "10"))
+    # 熔断持续时间(秒),过后进入半开状态试探恢复
+    CIRCUIT_RECOVERY_SECONDS = int(os.getenv("CIRCUIT_RECOVERY_SECONDS", "120"))
+
     IP_WHITELIST_ENABLED = os.getenv("IP_WHITELIST_ENABLED", "false").lower() == "true"
     IP_WHITELIST = [ip.strip() for ip in os.getenv("IP_WHITELIST", "").split(",") if ip.strip()]
 

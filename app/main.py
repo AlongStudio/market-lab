@@ -16,6 +16,7 @@ from app.api.routes import router as api_router
 from app.config import settings
 from app.db.migrations import run_migrations
 from app.db.session import get_session
+from app.scheduler import task_runner
 from app.scheduler.scheduler import build_scheduler
 from app.web.routes import router as web_router
 
@@ -42,11 +43,15 @@ if _UI_DIR.exists():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
-    # 应用启动时执行数据库迁移 + 播种初始用户
+    # 应用启动时执行数据库迁移 + 播种初始用户 + 清理残留 RUNNING
     db = next(get_session())
     try:
         run_migrations(db)
         auth.seed_initial_user(db)
+        # 清理上次崩溃/重启留下的 RUNNING 僵尸任务,快速恢复调度
+        n = task_runner.reset_running_on_startup(db)
+        if n:
+            _logger.warning("启动清理:重置 %d 个残留 RUNNING 任务为 PENDING", n)
     finally:
         db.close()
 
