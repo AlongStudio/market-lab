@@ -17,8 +17,16 @@ class Settings:
     BACKFILL_YEARS = int(os.getenv("BACKFILL_YEARS", "0"))  # 0 = 从上市日全历史
     # 回填按区间分片的年跨度:每只股票每 N 年生成一个任务,减少单任务失败成本
     BACKFILL_CHUNK_YEARS = int(os.getenv("BACKFILL_CHUNK_YEARS", "3"))
-    AKSHARE_QPS = float(os.getenv("AKSHARE_QPS", "2"))
+    AKSHARE_QPS = float(os.getenv("AKSHARE_QPS", "1"))  # 降低默认QPS防封IP
     MINUTE_HASH_TABLES = int(os.getenv("MINUTE_HASH_TABLES", "32"))
+
+    # ── 数据源配置 ──────────────────────────────────────────────────
+    # 默认数据源 + fallback 顺序（逗号分隔），从左到右依次尝试
+    # 可选值: eastmoney, sina, tencent
+    # 例: "sina,eastmoney,tencent" 表示优先新浪，失败切东财，再失败切腾讯
+    DATA_SOURCE_ORDER = [s.strip() for s in os.getenv("DATA_SOURCE_ORDER", "sina,eastmoney,tencent").split(",") if s.strip()]
+    # 单个数据源连续失败 N 次后跳过该源（熔断该源），尝试下一个
+    DATA_SOURCE_FAIL_THRESHOLD = int(os.getenv("DATA_SOURCE_FAIL_THRESHOLD", "3"))
 
     # 单次 akshare 外呼的 socket 超时(秒),防止远端假死把 worker 线程卡死
     AKSHARE_TIMEOUT = float(os.getenv("AKSHARE_TIMEOUT", "30"))
