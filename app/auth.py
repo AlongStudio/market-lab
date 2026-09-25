@@ -39,6 +39,10 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, stored: str) -> bool:
+    # 兼容两种存储格式:pbkdf2_sha256$... 旧哈希 / 明码(PLAIN)。
+    # 明码场景下直接恒定时间比较,不做拆分解析。
+    if not stored.startswith("pbkdf2_sha256$"):
+        return hmac.compare_digest(password.encode("utf-8"), stored.encode("utf-8"))
     try:
         algo, iters_s, salt_b64, hash_b64 = stored.split("$")
         if algo != "pbkdf2_sha256":
@@ -97,16 +101,17 @@ def authenticate(db: Session, username: str, password: str) -> bool:
 
 
 def seed_initial_user(db: Session) -> None:
-    """按 AUTH_INIT_USER/PASSWORD 播种初始用户;已存在则跳过。"""
+    """按 AUTH_INIT_USER/PASSWORD 播种初始用户;已存在则更新为最新密码(upsert)。"""
     u = settings.AUTH_INIT_USER
     p = settings.AUTH_INIT_PASSWORD
     if not u or not p:
         return
-    exists = db.execute(text("SELECT 1 FROM users WHERE username=:u"), {"u": u}).first()
-    if exists:
-        return
+    # 明码存储:与 verify_password 的明码分支对应,库里直接存 AUTH_INIT_PASSWORD 原文
     db.execute(
-        text("INSERT INTO users (username, password_hash) VALUES (:u, :h)"),
-        {"u": u, "h": hash_password(p)},
+        text(
+            "INSERT INTO users (username, password_hash) VALUES (:u, :h) "
+            "ON DUPLICATE KEY UPDATE password_hash=VALUES(password_hash)"
+        ),
+        {"u": u, "h": p},
     )
     db.commit()
