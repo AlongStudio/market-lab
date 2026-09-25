@@ -9,8 +9,10 @@
 from datetime import time as dtime
 
 # 各档并发(worker 数),保留分时段配置能力
+# 2026-09-26: OFFHOUR 4→32 提速日线回填(43.5万积压,QPS=5 瓶颈下 worker 需打满);
+# 任务单条 1-2s 完成,tick 10s 领取量=worker 数,4 个时 80% 时间空转
 INTRADAY_WORKERS = 4   # 交易时段跑分钟K
-OFFHOUR_WORKERS = 4    # 收盘后/非交易日跑日K
+OFFHOUR_WORKERS = 32   # 收盘后/非交易日跑日K
 
 # data_type 分组:严格隔离
 MINUTE_TYPES = ("minute",)
