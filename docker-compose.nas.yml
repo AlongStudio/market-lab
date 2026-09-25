@@ -26,7 +26,8 @@ services:
     image: market-lab:latest
     container_name: market-lab
     restart: unless-stopped
-    network_mode: bridge
+    networks:
+      - market-net
     env_file:
       - .env.nas
     ports:
@@ -41,3 +42,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+networks:
+  market-net:
+    external: true
