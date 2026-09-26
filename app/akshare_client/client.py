@@ -10,9 +10,13 @@
   用 ThreadPoolExecutor + future.result(timeout) 做真正的 wall-clock 收割,
   超时后放弃 future,akshare 线程自行消亡(GIL 最终释放)。
 - 熔断器:连续失败达阈值后短路所有外呼,避免远端不可达时 worker 逐个卡死。
+  冷却期满转 HALF_OPEN 后只放行 1 个探针请求,探针成功才恢复 CLOSED,
+  防止并发任务批量涌入试探造成"开闸-涌入-再开闸"空转。
 - 多数据源 fallback:按 DATA_SOURCE_ORDER 配置的顺序依次尝试,
   单源连续失败达阈值后跳过该源,自动切到下一个源。
   每个源的连续失败计数独立，某源恢复后（半开试探成功）会重新启用。
+  已被源级隔离的失败不再计入全局熔断器——单源故障(如被封 IP)
+  由源级隔离处理,不放大成全局熔断闷死健康源。
 """
 import logging
 import socket
@@ -39,12 +43,17 @@ T = TypeVar("T")
 
 
 class _CircuitBreaker:
-    """简单熔断器:连续失败达阈值后开路,冷却后半开试探。
+    """简单熔断器:连续失败达阈值后开路,冷却后半开单探针试探。
 
     状态机:
       CLOSED  -> 正常放行,记录连续失败数
       OPEN    -> 快速短路(直接抛异常),拒绝所有外呼,持续 CIRCUIT_RECOVERY_SECONDS
-      HALF_OPEN -> 冷却期满,放行一次试探;成功则 CLOSED,失败则重新 OPEN
+      HALF_OPEN -> 冷却期满,只放行 1 个探针请求;成功则 CLOSED,失败则
+                 重新 OPEN(冷却重新起算)。其余并发请求在半开期直接
+                 拒绝——防止冷却期满后一个 tick 的几十个任务同时涌入
+                 试探,批量失败灌回计数器造成"开闸-涌入-再开闸"高频
+                 空转,健康源被全局熔断闷死(2026-09-26 东财被封事故,
+                 docs/plans/T3-deadlock-and-circuit-probe.md §2.2)。
     """
 
     def __init__(self, failure_threshold: int, recovery_seconds: int):
@@ -53,6 +62,7 @@ class _CircuitBreaker:
         self._failures = 0
         self._state = "CLOSED"
         self._opened_at = 0.0
+        self._half_open_inflight = 0
         self._lock = threading.Lock()
 
     @property
@@ -65,27 +75,43 @@ class _CircuitBreaker:
             return self._state
 
     def acquire(self) -> None:
-        if self.state == "OPEN":
-            raise RuntimeError(
-                f"熔断器开启中(连续失败 {self._failures} 次),"
-                f"等待 {self._recovery}s 后恢复"
-            )
+        # 整个判定在单锁内完成,保证"检查-转态-计数"原子性:
+        # 多个线程并发 acquire 时只有一个能拿到半开探针名额。
+        with self._lock:
+            if self._state == "OPEN":
+                if time.monotonic() - self._opened_at >= self._recovery:
+                    self._state = "HALF_OPEN"
+                else:
+                    raise RuntimeError(
+                        f"熔断器开启中(连续失败 {self._failures} 次),"
+                        f"等待 {self._recovery}s 后恢复"
+                    )
+            if self._state == "HALF_OPEN":
+                if self._half_open_inflight >= 1:
+                    raise RuntimeError("熔断器半开试探中:已有探针在途,拒绝并发外呼")
+                self._half_open_inflight += 1
+            # CLOSED:正常放行
 
     def on_success(self) -> None:
         with self._lock:
             self._failures = 0
             self._state = "CLOSED"
+            # 每个成功放行的调用恰好回调一次;CLOSED 期的递减被 max(0,..) 兜底
+            self._half_open_inflight = max(0, self._half_open_inflight - 1)
 
     def on_failure(self) -> None:
         with self._lock:
             self._failures += 1
             if self._state == "HALF_OPEN" or self._failures >= self._threshold:
                 self._state = "OPEN"
+                # 冷却从当下重新起算(探针失败不缓冲,防止"试探-失败-
+                # 立刻再试探"高频空转)
                 self._opened_at = time.monotonic()
                 logger.warning(
                     "熔断器开启(连续失败 %d 次,冷却 %ds)",
                     self._failures, self._recovery,
                 )
+            self._half_open_inflight = max(0, self._half_open_inflight - 1)
 
 
 _breaker = _CircuitBreaker(
@@ -197,23 +223,55 @@ _source_breakers: dict[str, _SourceBreaker] = {
 }
 
 
-def _call_with_timeout(fn: Callable[..., T], *args, **kwargs) -> T:
-    """在独立线程中执行 akshare 调用,wall-clock 超时后放弃。"""
+def _record_success(source: Optional[str] = None) -> None:
+    """外呼成功记账:先单源后全局。"""
+    sb = _source_breakers.get(source) if source else None
+    if sb:
+        sb.on_success()
+    _breaker.on_success()
+
+
+def _record_failure(source: Optional[str] = None) -> None:
+    """外呼失败记账:先单源后全局,单源已被隔离的失败不计全局。
+
+    顺序至关重要:先给单源计数(达到跳过阈值当场隔离),再判断该源
+    是否已不可用——是则不再灌入全局计数器。源级隔离已在处理这个
+    故障源,全局再计数只会把单源故障(如东财被封 IP)放大成全局
+    熔断,闷死其余健康源(2026-09-26 事故链,docs/plans/T3 §2.3)。
+    """
+    sb = _source_breakers.get(source) if source else None
+    if sb:
+        sb.on_failure()
+    if sb and not sb.is_available:
+        return
+    _breaker.on_failure()
+
+
+def _call_with_timeout(
+    fn: Callable[..., T], *args, source: Optional[str] = None, **kwargs
+) -> T:
+    """在独立线程中执行 akshare 调用,wall-clock 超时后放弃。
+
+    source: 数据源名,用于单源熔断记账;None 表示无源级隔离的调用
+    (如股票列表),只计全局。
+    """
     _breaker.acquire()
     _limiter.acquire()
     future = _ak_pool.submit(fn, *args, **kwargs)
     try:
         result = future.result(timeout=settings.AKSHARE_TIMEOUT + 5)
-        _breaker.on_success()
+        _record_success(source)
         return result
     except FutureTimeout:
-        _breaker.on_failure()
+        # future 被放弃但线程还在跑,该次调用不会再回来记账——
+        # 超时路径手工记一次失败,接受"探针结果晚到"的短暂误差
+        _record_failure(source)
         raise TimeoutError(
             f"akshare 调用 wall-clock 超时({settings.AKSHARE_TIMEOUT + 5}s): "
             f"{fn.__name__}({args}, {kwargs})"
         )
     except Exception:
-        _breaker.on_failure()
+        _record_failure(source)
         raise
 
 
@@ -237,9 +295,9 @@ def _fetch_with_fallback(
             continue
         fetcher = fetchers[source]
         try:
-            rows = _call_with_timeout(fetcher)
-            if breaker:
-                breaker.on_success()
+            # 单源成功/失败记账已统一收进 _call_with_timeout
+            # (_record_success/_record_failure,先单源后全局)
+            rows = _call_with_timeout(fetcher, source=source)
             if rows:
                 logger.debug("数据源 %s 成功获取 %s: %d 行", source, data_desc, len(rows))
                 return rows
@@ -248,8 +306,6 @@ def _fetch_with_fallback(
             return rows
         except Exception as e:
             last_error = e
-            if breaker:
-                breaker.on_failure()
             logger.warning("数据源 %s 获取 %s 失败: %s", source, data_desc, e)
             continue
     # 所有源都失败
