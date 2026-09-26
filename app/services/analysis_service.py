@@ -40,6 +40,10 @@ def validate_analysis_sql(sql: str) -> None:
     """只读防呆预检,不合法抛 ValueError(调用侧转 FAILED/error_msg)。"""
     if not sql or not sql.strip():
         raise ValueError("SQL 为空")
+    if "/*!" in sql:
+        # MySQL 版本注释 /*!40000 ... */ 里的内容会被真实执行,
+        # 不能当普通注释剥掉——分析 SQL 不需要它,出现即拒绝
+        raise ValueError("禁止 MySQL 版本注释 /*! */(内含可执行代码)")
     body = _SQL_COMMENT.sub(" ", sql)
     if ";" in body:
         raise ValueError("禁止分号(单条 SELECT 无需分号,防多语句/截断攻击)")

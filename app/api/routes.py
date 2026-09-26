@@ -15,7 +15,7 @@ from app.db.minute_shard import all_minute_tables, minute_table_of
 from app.db.session import get_session
 from app.report.generator import generate_report
 from app.scheduler import task_runner
-from app.services import metrics, runtime_config, stats_service
+from app.services import analysis_service, metrics, runtime_config, stats_service
 
 router = APIRouter(prefix="/api")
 
@@ -93,6 +93,21 @@ def get_minute(
     d1 = d0 + timedelta(days=1)
     rows = db.execute(sql, {"code": code, "d0": d0, "d1": d1}).mappings().all()
     return {"code": code, "day": day.isoformat(), "data": [dict(r) for r in rows]}
+
+
+@router.get("/kline/minute/dates")
+def get_minute_dates(
+    code: str = Query(..., description="带前缀代码,如 SH600519"),
+    db: Session = Depends(get_session),
+):
+    """该股有哪些分钟的交易日(详情页 DatePicker 限可选日期,抄 trade 同款接口)。"""
+    table = minute_table_of(code)
+    rows = db.execute(
+        text(f"SELECT DISTINCT DATE(minute_time) AS d FROM {table} "
+             f"WHERE stock_code=:code ORDER BY d DESC"),
+        {"code": code},
+    ).scalars().all()
+    return {"code": code, "dates": [d.isoformat() for d in rows]}
 
 
 @router.get("/stocks")
@@ -471,3 +486,89 @@ def get_throughput():
             ),
         },
     }
+
+
+# ── K线分析选股(T2,docs/plans/T2 §5)──────────────────────────────
+
+@router.get("/analysis/tasks")
+def analysis_tasks(db: Session = Depends(get_session)):
+    """任务列表(含最近一次结果摘要,任务管理 UI 的数据源)。"""
+    return {"data": analysis_service.list_tasks(db)}
+
+
+@router.post("/analysis/tasks", status_code=201)
+def create_analysis_task(
+    name: str = Body(..., embed=True),
+    description: str = Body("", embed=True),
+    result_sql: str = Body(..., embed=True),
+    db: Session = Depends(get_session),
+):
+    try:
+        task_id = analysis_service.create_task(db, name, description, result_sql)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"id": task_id}
+
+
+@router.get("/analysis/tasks/{task_id}")
+def get_analysis_task(task_id: int, db: Session = Depends(get_session)):
+    task = analysis_service.get_task(db, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    return task
+
+
+@router.put("/analysis/tasks/{task_id}")
+def update_analysis_task(
+    task_id: int,
+    body: dict = Body(...),
+    db: Session = Depends(get_session),
+):
+    """部分更新:name/description/result_sql/is_active(改 SQL 时重新预检)。"""
+    if not analysis_service.get_task(db, task_id):
+        raise HTTPException(404, "任务不存在")
+    try:
+        analysis_service.update_task(db, task_id, body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@router.delete("/analysis/tasks/{task_id}")
+def delete_analysis_task(task_id: int, db: Session = Depends(get_session)):
+    """删除任务并级联删除结果快照(一期从简)。"""
+    if not analysis_service.delete_task(db, task_id):
+        raise HTTPException(404, "任务不存在")
+    return {"ok": True}
+
+
+@router.post("/analysis/tasks/{task_id}/test-run")
+def test_run_analysis(
+    task_id: int,
+    trading_day: Optional[date] = Body(None, embed=True),
+    limit: int = Body(50, embed=True),
+    db: Session = Depends(get_session),
+):
+    """立即试跑(不落快照),调 SQL 用。基准日缺省取 daily_kline 最新交易日。"""
+    try:
+        return analysis_service.test_run(db, task_id, trading_day, limit)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/analysis/results")
+def analysis_results(
+    day: Optional[date] = None,
+    task_id: Optional[int] = None,
+    db: Session = Depends(get_session),
+):
+    return {"data": analysis_service.get_results(db, day=day, task_id=task_id)}
+
+
+@router.get("/analysis/latest")
+def analysis_latest(db: Session = Depends(get_session)):
+    """最近一个有结果快照的交易日全部结果(通知落地页用)。"""
+    day = analysis_service.latest_result_day(db)
+    if day is None:
+        return {"day": None, "data": []}
+    return {"day": str(day), "data": analysis_service.get_results(db, day=day)}
