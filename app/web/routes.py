@@ -19,3 +19,8 @@ def login_page(request: Request):
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
     return templates.TemplateResponse(request, "dashboard.html", {})
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings(request: Request):
+    return templates.TemplateResponse(request, "settings.html", {})

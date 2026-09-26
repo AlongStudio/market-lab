@@ -10,6 +10,9 @@
          background: #f5f6f8; color: #1f2329; }
   header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px;
            display: flex; justify-content: space-between; align-items: center; }
+  header .nav { display: flex; align-items: center; gap: 18px; }
+  header .nav a { color: #cfd3d9; font-size: 14px; text-decoration: none; }
+  header .nav a:hover { color: #fff; }
   header .logout { background: transparent; border: 1px solid #5a5f66; color: #cfd3d9;
                    padding: 5px 12px; font-size: 13px; }
   header .logout:hover { background: #2c3138; }
@@ -58,7 +61,12 @@
 </style>
 </head>
 <body>
-<header><span>market-lab 管理面板</span><button class="logout" onclick="logout()">退出登录</button></header>
+<header><span>market-lab 管理面板</span>
+  <div class="nav">
+    <a href="/settings">运行设置</a>
+    <button class="logout" onclick="logout()">退出登录</button>
+  </div>
+</header>
 <div class="wrap">
   <div class="cards" id="cards"></div>
 
@@ -66,26 +74,6 @@
     <h2>采集进度</h2>
     <div class="bar"><i id="progressBar" style="width:0%"></i></div>
     <div class="muted" id="progressText" style="margin-top:8px"></div>
-  </section>
-
-  <section>
-    <h2>运行调优 <span class="muted" id="tuningUpdated" style="font-weight:400"></span></h2>
-    <div class="stat-row" id="tuningStats"></div>
-    <div class="filters" style="align-items:center; flex-wrap:wrap; gap:14px;">
-      <label style="display:flex;align-items:center;gap:6px;white-space:nowrap;">QPS
-        <input id="cfg-akshare_qps" type="number" step="0.5" style="width:90px"></label>
-      <label style="display:flex;align-items:center;gap:6px;white-space:nowrap;">非交易 worker
-        <input id="cfg-offhour_workers" type="number" step="1" style="width:90px"></label>
-      <label style="display:flex;align-items:center;gap:6px;white-space:nowrap;">交易 worker
-        <input id="cfg-intraday_workers" type="number" step="1" style="width:90px"></label>
-      <label style="display:flex;align-items:center;gap:6px;white-space:nowrap;">tick 间隔(秒)
-        <input id="cfg-tick_interval_sec" type="number" step="1" style="width:90px"></label>
-      <button onclick="applyConfig()">应用</button>
-      <span class="muted" id="applyMsg"></span>
-    </div>
-    <svg id="throughputChart" viewBox="0 0 800 150" width="100%" height="150"
-         preserveAspectRatio="none" style="margin-top:12px; display:block;"></svg>
-    <div class="muted" id="throughputText" style="margin-top:4px"></div>
   </section>
 
   <section>
@@ -372,113 +360,9 @@ async function retryAll() {
   refresh();
 }
 
-// ── 运行调优(QPS/worker/tick 热调 + 吞吐观测) ────────────────────
-const CFG_LABELS = {
-  'akshare_qps': 'QPS',
-  'offhour_workers': '非交易 worker',
-  'intraday_workers': '交易 worker',
-  'tick_interval_sec': 'tick 间隔(秒)',
-};
-let _cfg = {};  // key -> {effective,min,max,updated_at,updated_by}
-
-async function loadTuning() {
-  const d = await api('/api/config');
-  _cfg = {};
-  d.data.forEach(c => { _cfg[c.key] = c; });
-  document.getElementById('tuningStats').innerHTML = d.data.map(c =>
-    `<div class="stat-item"><div class="stat-label">${CFG_LABELS[c.key] || c.key}</div>` +
-    `<div class="stat-value">${c.effective} <span class="muted">(${c.min}~${c.max})</span></div></div>`
-  ).join('');
-  d.data.forEach(c => {
-    const el = document.getElementById('cfg-' + c.key);
-    if (!el) return;
-    el.min = c.min; el.max = c.max;
-    if (document.activeElement !== el) el.value = c.effective;
-  });
-  const latest = d.data.filter(c => c.updated_at)
-    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
-  document.getElementById('tuningUpdated').textContent =
-    latest ? `（最近调整 ${formatTime(latest.updated_at)} by ${latest.updated_by || '-'}）` : '';
-}
-
-function showApplyMsg(msg, ok) {
-  const el = document.getElementById('applyMsg');
-  el.textContent = msg;
-  el.style.color = ok ? '#2e7d32' : '#c62828';
-}
-
-async function applyConfig() {
-  const payload = {};
-  for (const k of Object.keys(CFG_LABELS)) {
-    const el = document.getElementById('cfg-' + k);
-    const v = parseFloat(el.value);
-    if (isNaN(v)) continue;
-    if (_cfg[k] && v !== Number(_cfg[k].effective)) payload[k] = el.value;
-  }
-  if (!Object.keys(payload).length) { showApplyMsg('无改动', false); return; }
-  showApplyMsg('应用中…', true);
-  try {
-    await api('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    showApplyMsg('已应用,≤1 个 tick(默认 10s)后生效', true);
-    setTimeout(loadTuning, 3000);  // 读回确认生效
-  } catch (e) {
-    let detail = e.message;
-    try { detail = JSON.parse(e.message).detail || detail; } catch (_) {}
-    showApplyMsg('失败: ' + detail, false);
-  }
-}
-
-async function loadThroughput() {
-  const d = await api('/api/metrics/throughput');
-  renderChart(d.buckets || []);
-  const s = d.last_1h || {};
-  document.getElementById('throughputText').textContent =
-    `最近 1h:成功 ${s.success || 0} · 失败 ${s.failure || 0}(失败率 ${s.failure_rate_pct || 0}%)` +
-    ` · 折算 ${d.hourly_rate || 0} 任务/h · 平均耗时 ${s.avg_latency_ms || 0} ms` +
-    ` · 蓝=成功 红=失败(5 分钟/桶,最近 1h)`;
-}
-
-function renderChart(buckets) {
-  const svg = document.getElementById('throughputChart');
-  const last = buckets.slice(-12);
-  const W = 800, H = 150, padX = 10, padY = 16;
-  if (!last.length) {
-    svg.innerHTML = `<text x="400" y="80" text-anchor="middle" fill="#8a8f99" font-size="13">` +
-      `暂无吞吐数据(启动后开始累计)</text>`;
-    return;
-  }
-  const max = Math.max(1, ...last.map(b => (b.success || 0) + (b.failure || 0)));
-  const slot = (W - 2 * padX) / 12;
-  const barW = Math.max(8, slot * 0.6);
-  const yOf = v => H - padY - (v / max) * (H - 2 * padY);
-  let s = '';
-  [0, max].forEach(v => {
-    s += `<line x1="${padX}" y1="${yOf(v)}" x2="${W - padX}" y2="${yOf(v)}" stroke="#e8eaed"/>` +
-         `<text x="${W - padX}" y="${yOf(v) - 4}" text-anchor="end" font-size="10" fill="#8a8f99">${v}</text>`;
-  });
-  last.forEach((b, i) => {
-    const x = padX + i * slot + (slot - barW) / 2;
-    const yBase = H - padY;
-    const hSuc = (b.success || 0) / max * (H - 2 * padY);
-    const hFail = (b.failure || 0) / max * (H - 2 * padY);
-    let bars = '';
-    if (b.success) bars += `<rect x="${x}" y="${yBase - hSuc}" width="${barW}" height="${hSuc}" fill="#2f7cf6"/>`;
-    if (b.failure) bars += `<rect x="${x}" y="${yBase - hSuc - hFail}" width="${barW}" height="${hFail}" fill="#e57373"/>`;
-    const t = new Date(b.bucket_ts * 1000);
-    s += `<g><title>${t.toLocaleTimeString('zh-CN', {hour12: false})} ` +
-         `成功 ${b.success || 0} · 失败 ${b.failure || 0} · 平均 ${b.avg_latency_ms || 0}ms</title>${bars}</g>`;
-  });
-  svg.innerHTML = s;
-}
-
 async function refresh() {
   try {
-    await Promise.all([loadCards(), loadProgress(), loadDetails(), loadAllFailed(),
-                       loadTuning(), loadThroughput()]);
+    await Promise.all([loadCards(), loadProgress(), loadDetails(), loadAllFailed()]);
   } catch (e) {
     console.error(e);
   }

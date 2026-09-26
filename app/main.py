@@ -27,11 +27,11 @@ _logger = logging.getLogger(__name__)
 _scheduler = None
 
 # 无需 token 即可访问的路径(登录接口/健康检查/登录页+面板页壳/API 文档)。
-# 注意:/dashboard 仅返回页面骨架,真实数据全走受保护的 /api/*,故页面本身可公开;
-# 未登录时页面内 JS 会自行跳转 /login。
+# 注意:/dashboard 与 /settings 仅返回页面骨架,真实数据全走受保护的 /api/*,
+# 故页面本身可公开;未登录时页面内 JS 会自行跳转 /login。
 _PUBLIC_PATHS = {
     "/api/login", "/api/health", "/health",
-    "/login", "/dashboard", "/docs", "/openapi.json", "/redoc", "/favicon.ico",
+    "/login", "/dashboard", "/settings", "/docs", "/openapi.json", "/redoc", "/favicon.ico",
 }
 
 # UI 静态文件目录
