@@ -55,6 +55,9 @@ def upsert_kline(
     stock_code: 带前缀(入库用);symbol: 无前缀(akshare 调用用)。
     """
     table = _TABLE[table_key]
+    # 外呼与 DB 写入隔离约束:fetch_kline 纯内存返回,必须在任何 db.execute
+    # 之前完成。禁止把外呼塞进事务——1.5~2s 的网络等待会拉长持锁窗口,
+    # 放大并发死锁(docs/plans/T3-deadlock-and-circuit-probe.md §1.2C)。
     rows = client.fetch_kline(symbol, period=table_key, adjust=adjust,
                               start_date=start_date, end_date=end_date)
     if not rows:
@@ -90,6 +93,13 @@ def upsert_kline(
 
     if not params:
         return 0
-    db.execute(sql, params)
-    db.commit()
+    # 分片写入:每批 ≤30 行独立提交,把持锁窗口从"整段K线"缩到单片。
+    # 并发 worker 的 INSERT 全部在索引末尾争 supremum 插入位锁,单事务
+    # 批量越大长事务互等越狠(2026-09-26 worker=64 压测死锁实证,
+    # docs/plans/T3-deadlock-and-circuit-probe.md §1.2B)。
+    # 分片间失败时已提交分片保留,重试时 IODKU 天然幂等覆盖。
+    CHUNK = 30
+    for i in range(0, len(params), CHUNK):
+        db.execute(sql, params[i:i + CHUNK])
+        db.commit()
     return len(params)

@@ -63,7 +63,13 @@ def claim_tasks(db: Session, limit: int, data_types: tuple[str, ...]) -> list[di
 
 
 def _execute(db: Session, task: dict) -> int:
-    """按 data_type 分派采集,返回写入行数。"""
+    """按 data_type 分派采集,返回写入行数。
+
+    外呼隔离约束:akshare 拉数(fetch)只允许在 DB 事务之外进行——
+    service 内部先 fetch(纯内存)再分片 execute+commit。禁止把外呼
+    塞进事务,否则 1.5~2s 网络等待会拉长持锁窗口放大死锁
+    (docs/plans/T3-deadlock-and-circuit-probe.md §1.2C)。
+    """
     stock_code = task["stock_code"]
     symbol = _symbol_of(stock_code)
     dt = task["data_type"]
@@ -77,29 +83,47 @@ def _execute(db: Session, task: dict) -> int:
     raise ValueError(f"未知 data_type: {dt}")
 
 
+def _write_task_status(db: Session, sql: str, params: dict) -> None:
+    """状态回写独立小事务(死锁修复 A,docs/plans/T3 §1.2A)。
+
+    回写前 rollback 丢弃执行阶段可能残留的事务状态:session 干净时是
+    no-op,分片写入中途失败时丢弃的是未提交分片(已提交分片保留,
+    重试 IODKU 幂等覆盖)。由此保证本事务只含这一条 UPDATE fetch_task,
+    fetch_task 行锁与 K 线表锁(含 supremum 插入位锁)从不共存于
+    同一事务,消除跨表锁交错死锁面。
+    """
+    db.rollback()
+    db.execute(text(sql), params)
+    db.commit()
+
+
 def run_task(task: dict) -> None:
-    """单任务执行(独立 session,供 worker 线程调用)。"""
+    """单任务执行(独立 session,供 worker 线程调用)。
+
+    事务边界两段式(docs/plans/T3 §1.2A):
+      1. 数据写入:_execute 内 service 各自分片 commit;
+      2. 状态回写:_write_task_status 独立单语句小事务。
+    """
     t0 = time.monotonic()
     db = SessionLocal()
     try:
         _execute(db, task)
-        db.execute(
-            text("UPDATE fetch_task SET status='SUCCESS', finished_at=NOW(), last_error=NULL "
-                 "WHERE id=:id"),
+        _write_task_status(
+            db,
+            "UPDATE fetch_task SET status='SUCCESS', finished_at=NOW(), last_error=NULL "
+            "WHERE id=:id",
             {"id": task["id"]},
         )
-        db.commit()
         metrics.record_success((time.monotonic() - t0) * 1000)
     except Exception as e:  # noqa: BLE001 采集失败要落库 last_error 不能吞
-        db.rollback()
         msg = str(e)[:2000]
         logger.warning("task %s failed: %s", task["id"], msg)
-        db.execute(
-            text("UPDATE fetch_task SET status='FAILED', retry_count=retry_count+1, "
-                 "last_error=:err, finished_at=NOW() WHERE id=:id"),
+        _write_task_status(
+            db,
+            "UPDATE fetch_task SET status='FAILED', retry_count=retry_count+1, "
+            "last_error=:err, finished_at=NOW() WHERE id=:id",
             {"id": task["id"], "err": msg},
         )
-        db.commit()
         metrics.record_failure((time.monotonic() - t0) * 1000)
     finally:
         db.close()

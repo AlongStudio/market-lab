@@ -15,6 +15,8 @@ def upsert_minute(db: Session, stock_code: str, symbol: str) -> int:
 
     stock_code: 带前缀(路由+入库);symbol: 无前缀(akshare 调用)。
     """
+    # 外呼与 DB 写入隔离约束:fetch_minute 纯内存返回,必须在任何
+    # db.execute 之前完成,禁止把外呼塞进事务(docs/plans/T3 §1.2C)。
     rows = client.fetch_minute(symbol)
     if not rows:
         return 0
@@ -48,6 +50,11 @@ def upsert_minute(db: Session, stock_code: str, symbol: str) -> int:
         })
     if not params:
         return 0
-    db.execute(sql, params)
-    db.commit()
+    # 同 kline_service 分片写入:近5日分钟K单批可达 ~1200 行,单事务批量
+    # 比日K更大;分表只减小表体量,不缩短事务持锁时长,故同样分片
+    # (docs/plans/T3 §1.2B)。失败时已提交分片保留,重试幂等。
+    CHUNK = 30
+    for i in range(0, len(params), CHUNK):
+        db.execute(sql, params[i:i + CHUNK])
+        db.commit()
     return len(params)

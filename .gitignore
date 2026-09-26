@@ -16,6 +16,10 @@ scripts/nas-auto-deploy.sh
 DEPLOYMENT.LOCAL.md
 docs/
 NAS-SETUP-REQUIRED.md
+# 放行:开发任务规划文档(无敏感信息,需要进版本库供协作开发)
+!docs/
+docs/*
+!docs/plans/
 
 # IDE
 .vscode/
@@ -50,6 +54,7 @@ wheels/
 
 # 虚拟环境
 venv/
+.venv/
 ENV/
 env/
 
