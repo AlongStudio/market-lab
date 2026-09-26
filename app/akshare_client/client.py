@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 socket.setdefaulttimeout(settings.AKSHARE_TIMEOUT)
 
-_ak_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="akshare-call")
+_ak_pool = ThreadPoolExecutor(max_workers=24, thread_name_prefix="akshare-call")
 
 T = TypeVar("T")
 
