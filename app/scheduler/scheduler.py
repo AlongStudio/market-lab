@@ -17,7 +17,7 @@ from app.akshare_client.client import _breaker
 from app.config import settings
 from app.db.session import SessionLocal
 from app.report.generator import generate_report
-from app.scheduler import task_gen, task_runner
+from app.scheduler import analysis_runner, task_gen, task_runner
 from app.scheduler.concurrency import get_policy
 from app.services import meta_service, runtime_config, stats_service
 
@@ -156,6 +156,9 @@ def build_scheduler() -> BackgroundScheduler:
     sched.add_job(_gen_minute_tasks, "cron", hour=9, minute=0, id="gen_minute")
     # 日K增量生成:收盘后 16:10(此时段已切回跑日K组)
     sched.add_job(_gen_daily_incremental, "cron", hour=16, minute=10, id="gen_daily")
+    # K线分析选股:收盘后 16:15(增量任务生成之后,自检当日数据已入库)
+    sched.add_job(analysis_runner.run_analysis_once, "cron", hour=16, minute=15,
+                  id="analysis_daily", max_instances=1, coalesce=True)
     # 失败重置:每 10 分钟
     sched.add_job(_requeue_failed, "interval", minutes=10, id="requeue")
     # stale RUNNING 回收:每 5 分钟(比失败重置更频繁,卡死任务尽快归还名额)

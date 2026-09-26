@@ -29,6 +29,7 @@ _HARD_DEFAULTS = {
     "offhour_workers": "32",
     "intraday_workers": "4",
     "tick_interval_sec": "10",
+    "analysis_timeout_sec": "300",
 }
 
 # env 快照:模块加载时读一次(进程生命周期内不变)。
@@ -43,6 +44,7 @@ CONFIG_RANGES = {
     "offhour_workers": (1.0, 64.0),
     "intraday_workers": (1.0, 16.0),
     "tick_interval_sec": (5.0, 60.0),
+    "analysis_timeout_sec": (30.0, 3600.0),
 }
 
 _lock = threading.Lock()
