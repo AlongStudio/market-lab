@@ -8,7 +8,10 @@
 """
 from datetime import time as dtime
 
-# 各档并发(worker 数),保留分时段配置能力
+from app.services import runtime_config
+
+# 各档并发(worker 数)回退默认:运行期真源是 runtime_config 表(改 DB ≤1 tick 生效),
+# 常量仅在 DB 无值时兜底,保留分时段配置能力
 # 2026-09-26: OFFHOUR 4→32 提速日线回填(43.5万积压,QPS=5 瓶颈下 worker 需打满);
 # 任务单条 1-2s 完成,tick 10s 领取量=worker 数,4 个时 80% 时间空转
 INTRADAY_WORKERS = 4   # 交易时段跑分钟K
@@ -26,7 +29,8 @@ def get_policy(now, is_trading_day: bool) -> tuple[tuple[str, ...], int]:
     """返回 (允许的 data_type 元组, 并发 worker 数)。
 
     交易日交易时段只跑分钟K;其余只跑日K组。严格隔离,互不混跑。
+    worker 数从 runtime_config 读(运行时可调),常量仅作回退默认。
     """
     if is_trading_day and _TRADE_START <= now.time() < _TRADE_END:
-        return MINUTE_TYPES, INTRADAY_WORKERS
-    return DAILY_TYPES, OFFHOUR_WORKERS
+        return MINUTE_TYPES, runtime_config.get_int("intraday_workers", INTRADAY_WORKERS)
+    return DAILY_TYPES, runtime_config.get_int("offhour_workers", OFFHOUR_WORKERS)

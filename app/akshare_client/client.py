@@ -27,6 +27,7 @@ import pandas as pd
 
 from app.config import settings
 from app.akshare_client import columns as C
+from app.services import runtime_config
 
 logger = logging.getLogger(__name__)
 
@@ -94,16 +95,38 @@ _breaker = _CircuitBreaker(
 
 
 class _RateLimiter:
-    """简单令牌桶:每秒补 qps 个令牌,acquire 阻塞到有令牌为止。"""
+    """简单令牌桶:每秒补 qps 个令牌,acquire 阻塞到有令牌为止。
+
+    qps 支持运行时热调:acquire 前比较 runtime_config 版本号(一次无锁 int 读,
+    不在热路径同步读 DB),变化则用新 QPS 重建桶参数,令牌余量按新容量截断。
+    """
 
     def __init__(self, qps: float):
         self._qps = max(qps, 0.1)
         self._capacity = max(qps, 1.0)
         self._tokens = self._capacity
         self._last = time.monotonic()
+        self._version = -1  # 强制首次 acquire 同步一次 DB 配置
         self._lock = threading.Lock()
 
+    def _sync_qps(self) -> None:
+        v = runtime_config.version()
+        if v == self._version:
+            return
+        with self._lock:
+            if v == self._version:
+                return
+            # runtime_config 已按护栏 clamp,DB 越界值不会生效
+            qps = runtime_config.get_float("akshare_qps", self._qps)
+            if qps != self._qps:
+                logger.info("令牌桶 QPS 动态调整: %.2f → %.2f", self._qps, qps)
+                self._qps = qps
+                self._capacity = max(qps, 1.0)
+                self._tokens = min(self._tokens, self._capacity)
+            self._version = v
+
     def acquire(self) -> None:
+        self._sync_qps()
         with self._lock:
             now = time.monotonic()
             self._tokens = min(self._capacity, self._tokens + (now - self._last) * self._qps)

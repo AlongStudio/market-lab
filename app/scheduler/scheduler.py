@@ -2,8 +2,12 @@
 
 执行循环:按 get_policy(now, is_trading_day) 决定本轮跑哪类数据 + 并发数,
 线程池并发跑任务。交易时段只跑分钟K,其余只跑日K组(严格隔离)。
+
+tick 间隔运行时可调(runtime_config.tick_interval_sec,5s~60s):APScheduler job
+固定按护栏下限 5s 触发,_tick 内节流决定实际领取间隔,改 DB ≤1 tick 生效。
 """
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import date, datetime
 
@@ -14,22 +18,33 @@ from app.config import settings
 from app.db.session import SessionLocal
 from app.report.generator import generate_report
 from app.scheduler import task_gen, task_runner
-from app.scheduler.concurrency import INTRADAY_WORKERS, OFFHOUR_WORKERS, get_policy
-from app.services import meta_service, stats_service
+from app.scheduler.concurrency import get_policy
+from app.services import meta_service, runtime_config, stats_service
 
 logger = logging.getLogger(__name__)
 
-_pool = ThreadPoolExecutor(
-    max_workers=max(INTRADAY_WORKERS, OFFHOUR_WORKERS), thread_name_prefix="fetch"
-)
+# 线程池建好后 max_workers 不可变:按 worker 护栏上限(offhour ≤64)建,
+# 线程惰性创建不会预占资源,实际并发由 tick 领取量决定
+_pool = ThreadPoolExecutor(max_workers=64, thread_name_prefix="fetch")
+
+_last_claim_ts = 0.0  # 上次真正领取任务的时刻(monotonic)
 
 
 def _tick() -> None:
     """执行循环:按当前时段策略领一批任务并发执行(严格隔离 data_type)。"""
+    global _last_claim_ts
     # 熔断器开启时跳过领取,避免 worker 拿到任务后必然超时卡死
     if _breaker.state == "OPEN":
         logger.warning("熔断器开启中,跳过本轮 tick")
         return
+    # 每 tick 先刷新配置缓存,让"改 DB → 生效"延迟 ≤ 1 tick
+    runtime_config.refresh()
+    # tick_interval_sec 节流:job 固定 5s 触发,未到间隔则空转跳过
+    interval = runtime_config.get_int("tick_interval_sec", 10)
+    now = time.monotonic()
+    if now - _last_claim_ts < interval:
+        return
+    _last_claim_ts = now
     db = SessionLocal()
     try:
         today = date.today()
@@ -131,8 +146,9 @@ def _refresh_stats() -> None:
 
 def build_scheduler() -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone="Asia/Shanghai")
-    # 执行循环:每 10s 领一批
-    sched.add_job(_tick, "interval", seconds=10, id="tick", max_instances=1,
+    # 执行循环:job 固定按 tick 护栏下限 5s 触发,实际领取间隔由
+    # runtime_config 的 tick_interval_sec 节流决定(默认 10s,行为不变)
+    sched.add_job(_tick, "interval", seconds=5, id="tick", max_instances=1,
                   coalesce=True)
     # 元数据刷新:每日 08:00
     sched.add_job(_refresh_meta, "cron", hour=8, minute=0, id="refresh_meta")
