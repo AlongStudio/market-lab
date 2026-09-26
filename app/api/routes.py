@@ -5,7 +5,7 @@
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
@@ -15,7 +15,7 @@ from app.db.minute_shard import all_minute_tables, minute_table_of
 from app.db.session import get_session
 from app.report.generator import generate_report
 from app.scheduler import task_runner
-from app.services import stats_service
+from app.services import metrics, runtime_config, stats_service
 
 router = APIRouter(prefix="/api")
 
@@ -371,4 +371,103 @@ def dashboard_details(
             }
             for t in recent_fail
         ],
+    }
+
+
+# ── 运行时配置(QPS/worker/tick 热调) + 吞吐观测 ────────────────────
+
+def _effective(key: str, raw: str) -> float:
+    """DB 原始字符串 -> 护栏内生效值(越界 clamp 到边界)。"""
+    lo, hi = runtime_config.CONFIG_RANGES[key]
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return lo
+    return round(min(max(v, lo), hi), 2)
+
+
+@router.get("/config")
+def get_runtime_config(db: Session = Depends(get_session)):
+    """读全部运行时配置。effective 为经护栏 clamp 后的当前生效值。"""
+    rows = db.execute(
+        text("SELECT config_key, config_value, description, updated_at, updated_by "
+             "FROM runtime_config ORDER BY config_key")
+    ).mappings().all()
+    return {
+        "data": [
+            {
+                "key": r["config_key"],
+                "value": r["config_value"],
+                "effective": (
+                    _effective(r["config_key"], r["config_value"])
+                    if r["config_key"] in runtime_config.CONFIG_RANGES else r["config_value"]
+                ),
+                "description": r["description"],
+                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+                "updated_by": r["updated_by"],
+                **({
+                    "min": runtime_config.CONFIG_RANGES[r["config_key"]][0],
+                    "max": runtime_config.CONFIG_RANGES[r["config_key"]][1],
+                } if r["config_key"] in runtime_config.CONFIG_RANGES else {}),
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/config")
+def set_runtime_config(
+    request: Request,
+    payload: dict = Body(...),
+):
+    """改运行时配置 {key: value, ...},立即生效(≤1 tick)。
+
+    护栏校验:越界值整体 400,不部分落库。updated_by 从 token 解出审计。
+    """
+    if not payload:
+        raise HTTPException(400, "请求体不能为空")
+    parsed: dict[str, str] = {}
+    for key, value in payload.items():
+        if key not in runtime_config.CONFIG_RANGES:
+            raise HTTPException(400, f"未知配置项: {key}")
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{key} 须为数字,收到: {value!r}")
+        lo, hi = runtime_config.CONFIG_RANGES[key]
+        if not lo <= num <= hi:
+            raise HTTPException(400, f"{key} 越界: 合法范围 {lo} ~ {hi},收到 {num}")
+        parsed[key] = str(int(num)) if num.is_integer() else str(num)
+
+    token = request.headers.get("authorization", "")
+    if token.lower().startswith("bearer "):
+        token = token[7:]
+    updated_by = auth.verify_token(token) or "anonymous"
+
+    for key, value in parsed.items():
+        runtime_config.set_config(key, value, updated_by=updated_by)
+    return {"ok": True, "applied": parsed}
+
+
+@router.get("/metrics/throughput")
+def get_throughput():
+    """最近 24h 的 5 分钟吞吐桶 + 最近 1h 折算小时速率。纯内存,重启清零。"""
+    buckets = metrics.snapshot()
+    last_1h = buckets[-12:]
+    ok = sum(b["success"] for b in last_1h)
+    fail = sum(b["failure"] for b in last_1h)
+    return {
+        "buckets": buckets,
+        "hourly_rate": metrics.hourly_rate(),
+        "last_1h": {
+            "success": ok,
+            "failure": fail,
+            "failure_rate_pct": round(fail / (ok + fail) * 100, 2) if (ok + fail) else 0.0,
+            "avg_latency_ms": (
+                round(
+                    sum(b["avg_latency_ms"] * (b["success"] + b["failure"]) for b in last_1h)
+                    / max(ok + fail, 1), 1
+                )
+            ),
+        },
     }

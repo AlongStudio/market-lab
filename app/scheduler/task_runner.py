@@ -6,12 +6,13 @@
        FAILED 且 retry_count<阈值 的重置 PENDING(指数退避由 next 调度判断)。
 """
 import logging
+import time
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
-from app.services import kline_service, minute_service
+from app.services import kline_service, metrics, minute_service
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ def _execute(db: Session, task: dict) -> int:
 
 def run_task(task: dict) -> None:
     """单任务执行(独立 session,供 worker 线程调用)。"""
+    t0 = time.monotonic()
     db = SessionLocal()
     try:
         _execute(db, task)
@@ -87,6 +89,7 @@ def run_task(task: dict) -> None:
             {"id": task["id"]},
         )
         db.commit()
+        metrics.record_success((time.monotonic() - t0) * 1000)
     except Exception as e:  # noqa: BLE001 采集失败要落库 last_error 不能吞
         db.rollback()
         msg = str(e)[:2000]
@@ -97,6 +100,7 @@ def run_task(task: dict) -> None:
             {"id": task["id"], "err": msg},
         )
         db.commit()
+        metrics.record_failure((time.monotonic() - t0) * 1000)
     finally:
         db.close()
 
