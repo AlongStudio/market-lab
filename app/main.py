@@ -31,7 +31,9 @@ _scheduler = None
 # 故页面本身可公开;未登录时页面内 JS 会自行跳转 /login。
 _PUBLIC_PATHS = {
     "/api/login", "/api/health", "/health",
-    "/login", "/dashboard", "/settings", "/analysis", "/stock", "/kline", "/static",
+    "/login", "/dashboard", "/settings", "/analysis",
+    "/analysis/strategies", "/analysis/run",
+    "/stock", "/kline", "/static",
     "/docs", "/openapi.json", "/redoc", "/favicon.ico",
 }
 
