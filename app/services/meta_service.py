@@ -1,8 +1,13 @@
 """股票列表 + 交易日历刷新服务。"""
+import logging
+
+import pymysql
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.akshare_client import client
+
+logger = logging.getLogger(__name__)
 
 
 def _market_of(code: str) -> str:
@@ -50,7 +55,57 @@ def refresh_stocks(db: Session) -> int:
         return 0
     db.execute(sql, params)
     db.commit()
+    _backfill_pinyin(db)
     return len(params)
+
+
+def _backfill_pinyin(db: Session) -> None:
+    """对 stocks.pinyin_initials IS NULL 的行,从 trade_dev.stocks 取拼音补全。
+
+    trade_dev 与 market_lab 分属不同 MySQL 实例(本机: trade_dev 在 3306,
+    market_lab 在 3307),无法跨实例 JOIN。改为先查 trade_dev 全量拼音,
+    再批量 UPDATE market_lab.stocks。trade_dev 不可达 → warn 不阻断主流程。
+    """
+    pending = db.execute(
+        text("SELECT stock_code FROM stocks WHERE pinyin_initials IS NULL")
+    ).scalars().all()
+    if not pending:
+        return
+    try:
+        conn = pymysql.connect(
+            host="127.0.0.1",
+            port=3306,
+            user="root",
+            password="root",
+            database="trade_dev",
+            charset="utf8mb4",
+        )
+    except Exception as e:
+        logger.warning("trade_dev 连接失败(拼音补全跳过): %s", e)
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT stock_code, pinyin_initials FROM stocks "
+                "WHERE pinyin_initials IS NOT NULL AND pinyin_initials != ''"
+            )
+            trade_map = dict(cur.fetchall())
+    finally:
+        conn.close()
+
+    update_sql = text(
+        "UPDATE stocks SET pinyin_initials=:pi WHERE stock_code=:code "
+        "AND pinyin_initials IS NULL"
+    )
+    rows = []
+    for code in pending:
+        pi = trade_map.get(code)
+        if pi:
+            rows.append({"pi": pi, "code": code})
+    if rows:
+        db.execute(update_sql, rows)
+        db.commit()
+        logger.info("拼音补全: %s 行", len(rows))
 
 
 def refresh_trade_calendar(db: Session) -> int:
