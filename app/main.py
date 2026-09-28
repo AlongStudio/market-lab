@@ -8,8 +8,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import auth
 from app.api.routes import router as api_router
@@ -71,6 +72,16 @@ if _UI_DIR.exists():
     # 把 /ui/* 路径也加入公网白名单
     _PUBLIC_PATHS.add("/ui")
     _PUBLIC_PATHS.add("/ui/")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def spa_fallback(request: Request, exc: StarletteHTTPException):
+    """SPA 前端路由兜底:/ui/* 未命中静态文件时回 index.html 交给 React Router,
+    使 /ui/login、/ui/analysis 等深链可直接访问/刷新;其余 404 照旧。"""
+    index = _UI_DIR / "index.html"
+    if exc.status_code == 404 and request.url.path.startswith("/ui") and index.exists():
+        return FileResponse(str(index))
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
 
 @app.middleware("http")
