@@ -19,19 +19,49 @@
   .wrap { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
   section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px;
             box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-  .toolbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
-  .toolbar select { padding: 6px 10px; border: 1px solid #dcdfe6; border-radius: 6px;
-                    font-size: 13px; max-width: 260px; }
-  .btn-group { display: flex; border: 1px solid #dcdfe6; border-radius: 6px; overflow: hidden; }
-  .btn-group button { background: #fff; color: #1f2329; border: 0; padding: 5px 14px;
-                      cursor: pointer; font-size: 13px; }
-  .btn-group button.active { background: #2f7cf6; color: #fff; }
   .muted { color: #8a8f99; font-size: 12px; }
   .searched { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
   .searched .code { font-size: 18px; font-weight: 600; }
   .searched .name { color: #8a8f99; font-size: 13px; }
-  .empty { text-align: center; color: #8a8f99; padding: 80px 0; }
-  #chart { width: 100%; height: 600px; }
+
+  .stock-search { position: relative; margin-bottom: 12px; max-width: 480px; }
+  .stock-search input {
+    width: 100%; padding: 8px 12px; border: 1px solid #dcdfe6; border-radius: 6px;
+    font-size: 14px; outline: none;
+  }
+  .stock-search input:focus { border-color: #2f7cf6; }
+  .suggest-list, .default-list {
+    position: absolute; top: 100%; left: 0; right: 0; background: #fff;
+    border: 1px solid #dcdfe6; border-radius: 6px; max-height: 360px; overflow-y: auto;
+    z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,.08);
+  }
+  .suggest-item, .default-item {
+    display: flex; align-items: baseline; gap: 10px; padding: 8px 12px; cursor: pointer;
+    font-size: 13px; border-bottom: 1px solid #f0f2f5;
+  }
+  .suggest-item:last-child, .default-item:last-child { border-bottom: 0; }
+  .suggest-item:hover, .suggest-item.highlighted,
+  .default-item:hover, .default-item.highlighted { background: #f5f8ff; }
+  .suggest-item .s-code, .default-item .s-code { font-weight: 600; min-width: 90px; }
+  .suggest-item .s-name, .default-item .s-name { color: #1f2329; flex: 1; }
+  .suggest-item .s-pinyin, .default-item .s-pinyin { color: #b3b8c2; font-size: 12px; }
+  .default-list-wrap { margin-bottom: 12px; }
+  .default-list-wrap .default-list { position: static; box-shadow: none; border-color: #f0f2f5; }
+  .default-list-title { color: #8a8f99; font-size: 12px; margin-bottom: 6px; }
+
+  .kr-tabs { display: flex; gap: 0; border-bottom: 1px solid #eee; margin-bottom: 14px; }
+  .kr-tab { padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent;
+            color: #8a8f99; }
+  .kr-tab.active { border-bottom-color: #2f7cf6; color: #2f7cf6; font-weight: 500; }
+  .kr-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .kr-btn-group { display: flex; border: 1px solid #dcdfe6; border-radius: 6px; overflow: hidden; }
+  .kr-btn-group button { background: #fff; color: #1f2329; border: 0; padding: 5px 14px;
+                         cursor: pointer; font-size: 13px; }
+  .kr-btn-group button.active { background: #2f7cf6; color: #fff; }
+  .kr-muted { color: #8a8f99; font-size: 12px; }
+  .kr-chart { width: 100%; height: 600px; }
+  .kr-empty { text-align: center; color: #8a8f99; padding: 80px 0; }
+  .kr-minute-day { padding: 5px 10px; border: 1px solid #dcdfe6; border-radius: 6px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -39,41 +69,35 @@
   <div class="nav">
     <a href="/dashboard">管理面板</a>
     <a href="/analysis">分析选股</a>
+    <a href="/analysis/strategies">策略管理</a>
+    <a href="/analysis/run">策略执行</a>
     <a href="/settings">运行设置</a>
     <button class="logout" onclick="logout()">退出登录</button>
   </div>
 </header>
 <div class="wrap">
   <section>
-    <div class="toolbar">
-      <label class="muted">股票:</label>
-      <select id="stockSelect" style="min-width:220px">
-        <option value="">加载中…</option>
-      </select>
-      <div class="btn-group" id="periodGroup">
-        <button data-period="daily" class="active">日K</button>
-        <button data-period="weekly">周K</button>
-        <button data-period="monthly">月K</button>
-      </div>
-      <div class="btn-group" id="adjustGroup">
-        <button data-adjust="">不复权</button>
-        <button data-adjust="qfq" class="active">前复权</button>
-        <button data-adjust="hfq">后复权</button>
-      </div>
+    <div class="stock-search">
+      <input id="stockInput" placeholder="代码/名称/拼音首字母(如 zgpa / 600519 / 贵州茅台)" autocomplete="off">
+      <div id="suggestList" class="suggest-list" style="display:none"></div>
+    </div>
+    <div id="defaultListWrap" class="default-list-wrap">
+      <div class="default-list-title">股票清单(点击加载 K 线)</div>
+      <div id="defaultList" class="default-list"></div>
     </div>
 
-    <div class="searched">
+    <div class="searched" id="searched" style="display:none">
       <span class="code" id="showCode"></span>
       <span class="name" id="showName"></span>
       <a class="muted" id="openDetail" style="display:none">打开详情页 →</a>
     </div>
 
-    <div id="chart"></div>
-    <div class="empty" id="chartEmpty" style="display:none">无数据(该股可能无此周期K线),或请在左侧选择一只股票</div>
+    <div id="klineMount"></div>
   </section>
 </div>
 
 <script src="/static/echarts.min.js"></script>
+<script src="/static/kline-render.js"></script>
 <script>
 function getToken() { return localStorage.getItem('token') || ''; }
 
@@ -82,7 +106,6 @@ function gotoLogin() {
   location.replace('/login');
 }
 
-// 无 token 直接回登录页,避免空跑一圈请求
 if (!getToken()) gotoLogin();
 
 async function api(path, opts) {
@@ -100,123 +123,153 @@ async function api(path, opts) {
 
 function logout() { gotoLogin(); }
 
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+const esc = KlineRender.esc;
 
 const state = {
-  stocks: [],
-  period: 'daily',
-  adjust: 'qfq',
   code: '',
+  stocks: [],
+  controller: null,
+  highlightIdx: -1,
+  lastInput: '',
 };
-let chart = null;
 
-async function loadStocks() {
-  const res = await api('/api/stocks');
-  state.stocks = res.data || [];
-  const sel = document.getElementById('stockSelect');
-  sel.innerHTML = '<option value="">选择股票…</option>' +
-    state.stocks.map(s =>
-      `<option value="${esc(s.stock_code)}">${esc(s.stock_code)} ${esc(s.stock_name)}</option>`
-    ).join('');
-  if (state.stocks.length) sel.selectedIndex = 0;
+const input = document.getElementById('stockInput');
+const suggestList = document.getElementById('suggestList');
+const defaultListWrap = document.getElementById('defaultListWrap');
+const defaultList = document.getElementById('defaultList');
+
+function renderItems(list, target) {
+  if (!list.length) {
+    target.innerHTML = '<div class="muted" style="padding:8px 12px">无匹配股票</div>';
+    return;
+  }
+  target.innerHTML = list.map((s, i) =>
+    `<div class="${target === defaultList ? 'default-item' : 'suggest-item'}" data-idx="${i}" data-code="${esc(s.stock_code)}">` +
+      `<span class="s-code">${esc(s.stock_code)}</span>` +
+      `<span class="s-name">${esc(s.stock_name)}</span>` +
+      `<span class="s-pinyin">${esc(s.pinyin_initials || '')}</span>` +
+    `</div>`
+  ).join('');
+  target.querySelectorAll('[data-code]').forEach(el => {
+    el.addEventListener('click', () => selectStock(el.dataset.code));
+  });
 }
 
-async function loadKline() {
-  if (!state.code) return;
-  const q = new URLSearchParams({ code: state.code, adjust: state.adjust });
-  // 默认拉全量历史(该接口无 start 时返回全部),供 dataZoom 缩放
-  const res = await api(`/api/kline/${state.period}?${q}`);
-  renderChart(res.data || []);
+function itemFromTarget(target, list) {
+  const idx = parseInt(target.dataset.idx, 10);
+  if (Number.isNaN(idx) || idx < 0 || idx >= list.length) return null;
+  return list[idx];
 }
 
-function renderChart(k) {
-  const empty = document.getElementById('chartEmpty');
-  const box = document.getElementById('chart');
-  if (!k.length) { box.style.display = 'none'; empty.style.display = 'block'; return; }
-  empty.style.display = 'none'; box.style.display = 'block';
-
-  const dates = k.map(d => d.trading_date);
-  const values = k.map(d => [d.open, d.close, d.low, d.high]);
-  const volumes = k.map(d => d.volume);
-  const option = {
-    animation: false,
-    grid: [
-      { left: '10%', right: '8%', top: '10%', height: '55%' },
-      { left: '10%', right: '8%', top: '70%', height: '15%' },
-    ],
-    xAxis: [
-      { type: 'category', data: dates, scale: true, boundaryGap: false,
-        axisLine: { onZero: false }, splitLine: { show: false },
-        min: 'dataMin', max: 'dataMax' },
-      { type: 'category', gridIndex: 1, data: dates, scale: true, boundaryGap: false,
-        axisLine: { onZero: false }, axisTick: { show: false },
-        splitLine: { show: false }, axisLabel: { show: false },
-        min: 'dataMin', max: 'dataMax' },
-    ],
-    yAxis: [
-      { scale: true, splitArea: { show: true } },
-      { scale: true, gridIndex: 1, splitNumber: 2, axisLabel: { show: false },
-        axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false } },
-    ],
-    dataZoom: [
-      { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
-      { show: true, xAxisIndex: [0, 1], type: 'slider', bottom: '5%', start: 0, end: 100 },
-    ],
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-    series: [
-      {
-        name: 'K线', type: 'candlestick', data: values,
-        itemStyle: { color: '#ef5350', color0: '#26a69a',
-                      borderColor: '#ef5350', borderColor0: '#26a69a' },
-      },
-      {
-        name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: volumes,
-        itemStyle: { color: (p) => k[p.dataIndex].close >= k[p.dataIndex].open ? '#ef5350' : '#26a69a' },
-      },
-    ],
-  };
-  if (!chart) chart = echarts.init(box);
-  chart.setOption(option, true);
+let debounceTimer = null;
+function onInput() {
+  const v = input.value.trim();
+  state.lastInput = v;
+  state.highlightIdx = -1;
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(async () => {
+    try {
+      const url = v
+        ? `/api/stocks?keyword=${encodeURIComponent(v)}&limit=20`
+        : `/api/stocks?limit=20`;
+      const res = await api(url);
+      const list = res.data || [];
+      if (v) {
+        defaultListWrap.style.display = 'none';
+        suggestList.style.display = 'block';
+        state.stocks = list;
+        renderItems(list, suggestList);
+      } else {
+        suggestList.style.display = 'none';
+        defaultListWrap.style.display = 'block';
+        state.stocks = list;
+        renderItems(list, defaultList);
+      }
+    } catch (e) {
+      // 静默失败,不打断输入
+    }
+  }, 200);
 }
 
-function onSelect() {
-  const sel = document.getElementById('stockSelect');
-  state.code = sel.value;
-  if (!state.code) return;
-  const s = state.stocks.find(x => x.stock_code === state.code);
-  document.getElementById('showCode').textContent = state.code;
-  document.getElementById('showName').textContent = s ? s.stock_name : '';
+function onKeydown(e) {
+  const list = state.stocks;
+  if (!list.length) return;
+  if (suggestList.style.display === 'none') return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    state.highlightIdx = (state.highlightIdx + 1) % list.length;
+    updateHighlight();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    state.highlightIdx = (state.highlightIdx - 1 + list.length) % list.length;
+    updateHighlight();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (state.highlightIdx >= 0 && state.highlightIdx < list.length) {
+      selectStock(list[state.highlightIdx].stock_code);
+    } else if (list.length) {
+      selectStock(list[0].stock_code);
+    }
+  } else if (e.key === 'Escape') {
+    suggestList.style.display = 'none';
+  }
+}
+
+function updateHighlight() {
+  suggestList.querySelectorAll('.suggest-item').forEach((el, i) => {
+    el.classList.toggle('highlighted', i === state.highlightIdx);
+  });
+}
+
+function selectStock(code) {
+  if (!code) return;
+  state.code = code;
+  input.value = '';
+  suggestList.style.display = 'none';
+  defaultListWrap.style.display = 'none';
+  loadSelected(code);
+}
+
+async function loadSelected(code) {
+  const stock = state.stocks.find(s => s.stock_code === code);
+  // 若选中不在当前列表,补一次查询拿名字
+  let name = stock ? stock.stock_name : '';
+  if (!name) {
+    try {
+      const res = await api(`/api/stocks?keyword=${encodeURIComponent(code)}&limit=20`);
+      const hit = (res.data || []).find(s => s.stock_code === code);
+      if (hit) name = hit.stock_name;
+    } catch (e) {}
+  }
+  document.getElementById('searched').style.display = 'flex';
+  document.getElementById('showCode').textContent = code;
+  document.getElementById('showName').textContent = name;
   const link = document.getElementById('openDetail');
-  link.href = '/stock/' + encodeURIComponent(state.code);
+  link.href = '/stock/' + encodeURIComponent(code);
   link.style.display = 'inline-block';
-  loadKline();
+
+  if (state.controller) { state.controller.dispose(); state.controller = null; }
+  state.controller = KlineRender.mountKline(document.getElementById('klineMount'), { code });
+  state.controller.loadInitial();
 }
 
-function handlePeriod(p) {
-  state.period = p;
-  document.querySelectorAll('#periodGroup button').forEach(b =>
-    b.classList.toggle('active', b.dataset.period === p));
-  loadKline();
-}
+input.addEventListener('input', onInput);
+input.addEventListener('keydown', onKeydown);
+input.addEventListener('blur', () => {
+  setTimeout(() => { suggestList.style.display = 'none'; }, 150);
+});
+input.addEventListener('focus', () => {
+  if (state.lastInput === '' && defaultList.children.length) {
+    defaultListWrap.style.display = 'block';
+  }
+});
 
-function handleAdjust(a) {
-  state.adjust = a;
-  document.querySelectorAll('#adjustGroup button').forEach(b =>
-    b.classList.toggle('active', b.dataset.adjust === a));
-  loadKline();
-}
+window.addEventListener('resize', () => {
+  if (state.controller && state.controller._resize) state.controller._resize();
+});
 
-document.getElementById('stockSelect').addEventListener('change', onSelect);
-document.querySelectorAll('#periodGroup button').forEach(b =>
-  b.addEventListener('click', () => handlePeriod(b.dataset.period)));
-document.querySelectorAll('#adjustGroup button').forEach(b =>
-  b.addEventListener('click', () => handleAdjust(b.dataset.adjust)));
-window.addEventListener('resize', () => { if (chart) chart.resize(); });
-
-loadStocks();
+// 初始加载默认清单
+onInput();
 </script>
 </body>
 </html>

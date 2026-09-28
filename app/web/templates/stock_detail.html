@@ -26,28 +26,31 @@
   .topline .name { color: #8a8f99; font-size: 13px; }
   .hit-tag { background: #fff3e0; color: #e65100; padding: 2px 8px; border-radius: 3px;
              font-size: 12px; font-weight: 500; }
-  .tabs { display: flex; gap: 0; border-bottom: 1px solid #eee; margin-bottom: 14px; }
-  .tab { padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent;
-         color: #8a8f99; }
-  .tab.active { border-bottom-color: #2f7cf6; color: #2f7cf6; font-weight: 500; }
-  .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
-  .btn-group { display: flex; border: 1px solid #dcdfe6; border-radius: 6px; overflow: hidden; }
-  .btn-group button { background: #fff; color: #1f2329; border: 0; padding: 5px 14px;
-                      cursor: pointer; font-size: 13px; }
-  .btn-group button.active { background: #2f7cf6; color: #fff; }
-  .empty { text-align: center; color: #8a8f99; padding: 80px 0; }
-  #chart { width: 100%; height: 600px; }
-  .muted { color: #8a8f99; font-size: 12px; }
-  .filters input { padding: 5px 10px; border: 1px solid #dcdfe6; border-radius: 6px;
-                   font-size: 13px; }
+
+  /* KlineRender 注入的 DOM 用 kr- 前缀样式 */
+  .kr-tabs { display: flex; gap: 0; border-bottom: 1px solid #eee; margin-bottom: 14px; }
+  .kr-tab { padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent;
+            color: #8a8f99; }
+  .kr-tab.active { border-bottom-color: #2f7cf6; color: #2f7cf6; font-weight: 500; }
+  .kr-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .kr-btn-group { display: flex; border: 1px solid #dcdfe6; border-radius: 6px; overflow: hidden; }
+  .kr-btn-group button { background: #fff; color: #1f2329; border: 0; padding: 5px 14px;
+                         cursor: pointer; font-size: 13px; }
+  .kr-btn-group button.active { background: #2f7cf6; color: #fff; }
+  .kr-muted { color: #8a8f99; font-size: 12px; }
+  .kr-chart { width: 100%; height: 600px; }
+  .kr-empty { text-align: center; color: #8a8f99; padding: 80px 0; }
+  .kr-minute-day { padding: 5px 10px; border: 1px solid #dcdfe6; border-radius: 6px; font-size: 13px; }
 </style>
 </head>
 <body>
 <header><span>market-lab 股票详情</span>
   <div class="nav">
     <a href="/dashboard">管理面板</a>
-    <a href="/analysis">分析选股</a>
     <a href="/kline">K线查询</a>
+    <a href="/analysis">分析选股</a>
+    <a href="/analysis/strategies">策略管理</a>
+    <a href="/analysis/run">策略执行</a>
     <a href="/settings">运行设置</a>
     <button class="logout" onclick="logout()">退出登录</button>
   </div>
@@ -61,35 +64,12 @@
   </div>
 
   <section>
-    <div class="tabs">
-      <div class="tab active" data-tab="kline">日/周/月K</div>
-      <div class="tab" data-tab="minute">分钟K</div>
-    </div>
-
-    <div class="toolbar" id="klineToolbar">
-      <div class="btn-group" id="periodGroup">
-        <button data-period="daily" class="active">日K</button>
-        <button data-period="weekly">周K</button>
-        <button data-period="monthly">月K</button>
-      </div>
-      <div class="btn-group" id="adjustGroup">
-        <button data-adjust="" >不复权</button>
-        <button data-adjust="qfq" class="active">前复权</button>
-        <button data-adjust="hfq">后复权</button>
-      </div>
-    </div>
-    <div class="toolbar" id="minuteToolbar" style="display:none">
-      <label class="muted">交易日:</label>
-      <input id="minuteDay" type="date">
-      <span class="muted" id="minuteDatesCount"></span>
-    </div>
-
-    <div id="chart"></div>
-    <div class="empty" id="chartEmpty" style="display:none">暂无数据</div>
+    <div id="klineMount"></div>
   </section>
 </div>
 
 <script src="/static/echarts.min.js"></script>
+<script src="/static/kline-render.js"></script>
 <script>
 function getToken() { return localStorage.getItem('token') || ''; }
 
@@ -98,279 +78,37 @@ function gotoLogin() {
   location.replace('/login');
 }
 
-// 无 token 直接回登录页,避免空跑一圈请求
 if (!getToken()) gotoLogin();
-
-async function api(path, opts) {
-  opts = opts || {};
-  opts.headers = Object.assign({}, opts.headers, {
-    'Authorization': 'Bearer ' + getToken(),
-  });
-  const r = await fetch(path, opts);
-  if (r.status === 401) { gotoLogin(); throw new Error('未授权'); }
-  const refreshed = r.headers.get('X-Refresh-Token');
-  if (refreshed) localStorage.setItem('token', refreshed);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
 
 function logout() { gotoLogin(); }
 
 const params = new URLSearchParams(location.search);
 const code = document.getElementById('stockCode').textContent =
   location.pathname.replace('/stock/', '').replace(/\/$/, '');
-const hitDay = params.get('day');  // 列表页带来的命中日,K 线上打点
+const hitDay = params.get('day');
 if (hitDay) {
   const tag = document.getElementById('hitTag');
   tag.textContent = '策略命中 ' + hitDay;
   tag.style.display = 'inline-block';
 }
-
-// 命中日从 /analysis 跳入时,返回链接带上 day;否则回到 /analysis
 const backLink = document.getElementById('backLink');
 if (hitDay) backLink.href = '/analysis?day=' + hitDay;
 
-/** 日K 默认窗口:自然日 180 天 ≈ 120 个交易日 */
-const DEFAULT_RANGE_DAYS = 180;
-
-let chart = null;
-const state = {
-  period: 'daily',       // daily/weekly/monthly
-  adjust: 'qfq',         // ''/qfq/hfq
-  klineData: [],
-  minuteDates: [],       // 该股有分钟数据的交易日
-  minuteDay: '',         // 当前分钟K 选的日
-  minuteData: [],
-  activeTab: 'kline',    // kline/minute
-  minuteLoaded: false,   // 分钟 tab 是否已拉过日期列表(按需加载)
-};
-
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-/* ---------- 顶部信息(股票名/命中日) ---------- */
-async function loadStockName() {
-  try {
-    const res = await api('/api/stocks');
-    const hit = res.data.find(s => s.stock_code === code);
+// 取股票名(命中失败不阻塞)
+fetch('/api/stocks?limit=500', { headers: { 'Authorization': 'Bearer ' + getToken() } })
+  .then(r => r.ok ? r.json() : null)
+  .then(res => {
+    if (!res) return;
+    const hit = (res.data || []).find(s => s.stock_code === code);
     if (hit) document.getElementById('stockName').textContent = hit.stock_name;
-  } catch (e) { /* 名称拿不到不阻塞 */ }
-}
+  })
+  .catch(() => {});
 
-/* ---------- 日/周/月K ---------- */
-async function loadKline() {
-  const startDay = (() => {
-    const def = new Date(Date.now() - DEFAULT_RANGE_DAYS * 86400000);
-    const defStr = def.toISOString().slice(0, 10);
-    // 命中日在默认窗口前则自动扩到命中日前(抄 React: hitDay<窗口 → 命中日前30天)
-    if (hitDay && hitDay < defStr) {
-      const d = new Date(hitDay);
-      d.setDate(d.getDate() - 30);
-      return d.toISOString().slice(0, 10);
-    }
-    return defStr;
-  })();
-  const q = new URLSearchParams({ code, adjust: state.adjust, start: startDay });
-  const res = await api(`/api/kline/${state.period}?${q}`);
-  state.klineData = res.data || [];
-  renderChart();
-}
-
-function buildKlineOption() {
-  const k = state.klineData;
-  if (!k.length) return null;
-  const dates = k.map(d => d.trading_date);
-  const values = k.map(d => [d.open, d.close, d.low, d.high]);
-  const volumes = k.map(d => d.volume);
-  const hit = hitDay ? k.find(d => d.trading_date === hitDay) : undefined;
-
-  return {
-    animation: false,
-    color: ['#2f7cf6'],
-    grid: [
-      { left: '10%', right: '8%', top: '10%', height: '55%' },
-      { left: '10%', right: '8%', top: '70%', height: '15%' },
-    ],
-    xAxis: [
-      { type: 'category', data: dates, scale: true, boundaryGap: false,
-        axisLine: { onZero: false }, splitLine: { show: false },
-        min: 'dataMin', max: 'dataMax' },
-      { type: 'category', gridIndex: 1, data: dates, scale: true, boundaryGap: false,
-        axisLine: { onZero: false }, axisTick: { show: false },
-        splitLine: { show: false }, axisLabel: { show: false },
-        min: 'dataMin', max: 'dataMax' },
-    ],
-    yAxis: [
-      { scale: true, splitArea: { show: true } },
-      { scale: true, gridIndex: 1, splitNumber: 2, axisLabel: { show: false },
-        axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false } },
-    ],
-    dataZoom: [
-      { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
-      { show: true, xAxisIndex: [0, 1], type: 'slider', bottom: '5%', start: 0, end: 100 },
-    ],
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-    series: [
-      {
-        name: 'K线', type: 'candlestick', data: values,
-        itemStyle: { color: '#ef5350', color0: '#26a69a',
-                      borderColor: '#ef5350', borderColor0: '#26a69a' },
-        markPoint: hit ? {
-          symbolSize: 45,
-          label: { formatter: '命中', fontSize: 10, color: '#fff' },
-          itemStyle: { color: '#faad14' },
-          data: [{ coord: [hitDay, hit.low], value: '命中' }],
-        } : undefined,
-      },
-      {
-        name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: volumes,
-        itemStyle: { color: (p) => k[p.dataIndex].close >= k[p.dataIndex].open ? '#ef5350' : '#26a69a' },
-      },
-    ],
-  };
-}
-
-/* ---------- 分钟K ---------- */
-async function loadMinuteDates() {
-  const res = await api(`/api/kline/minute/dates?code=${encodeURIComponent(code)}`);
-  state.minuteDates = res.dates || [];
-  document.getElementById('minuteDatesCount').textContent =
-    `共 ${state.minuteDates.length} 个交易日`;
-  const dateInput = document.getElementById('minuteDay');
-  if (state.minuteDates.length) {
-    dateInput.min = state.minuteDates[state.minuteDates.length - 1];  // 升序→最早
-    dateInput.max = state.minuteDates[0];                             // 最新
-    state.minuteDay = state.minuteDates[0] || '';
-    dateInput.value = state.minuteDay;
-  }
-}
-
-async function loadMinute() {
-  if (!state.minuteDay) return;
-  const res = await api(`/api/kline/minute/day?code=${encodeURIComponent(code)}&day=${state.minuteDay}`);
-  state.minuteData = res.data || [];
-  renderChart();
-}
-
-function buildMinuteOption() {
-  const m = state.minuteData;
-  if (!m.length) return null;
-  const times = m.map(d => {
-    const dt = new Date(d.minute_time);
-    return String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0');
-  });
-  const values = m.map(d => [d.open, d.close, d.low, d.high]);
-  const amounts = m.map(d => d.amount);
-  return {
-    animation: false,
-    grid: [
-      { left: '10%', right: '8%', top: '10%', height: '55%' },
-      { left: '10%', right: '8%', top: '70%', height: '15%' },
-    ],
-    xAxis: [
-      { type: 'category', data: times, scale: true, boundaryGap: false,
-        axisLine: { onZero: false }, splitLine: { show: false } },
-      { type: 'category', gridIndex: 1, data: times, scale: true, boundaryGap: false,
-        axisLine: { onZero: false }, axisTick: { show: false },
-        splitLine: { show: false }, axisLabel: { show: false } },
-    ],
-    yAxis: [
-      { scale: true, splitArea: { show: true } },
-      { scale: true, gridIndex: 1, splitNumber: 2, axisLabel: { show: false },
-        axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false } },
-    ],
-    dataZoom: [
-      { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
-      { show: true, xAxisIndex: [0, 1], type: 'slider', bottom: '5%', start: 0, end: 100 },
-    ],
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-    series: [
-      {
-        name: '分钟K', type: 'candlestick', data: values,
-        itemStyle: { color: '#ef5350', color0: '#26a69a',
-                      borderColor: '#ef5350', borderColor0: '#26a69a' },
-      },
-      {
-        name: '成交额', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: amounts,
-        itemStyle: { color: (p) => m[p.dataIndex].close >= m[p.dataIndex].open ? '#ef5350' : '#26a69a' },
-      },
-    ],
-  };
-}
-
-function renderChart() {
-  const option = state.activeTab === 'kline' ? buildKlineOption() : buildMinuteOption();
-  const empty = document.getElementById('chartEmpty');
-  const box = document.getElementById('chart');
-  if (!option) { box.style.display = 'none'; empty.style.display = 'block'; return; }
-  empty.style.display = 'none'; box.style.display = 'block';
-  if (!chart) chart = echarts.init(box);
-  chart.setOption(option, true);
-}
-
-/* ---------- Tab / 工具栏交互(按需加载,抄 trade handleTabChange) ---------- */
-function switchTab(name) {
-  if (state.activeTab === name) return;
-  state.activeTab = name;
-  document.querySelectorAll('.tab').forEach(t =>
-    t.classList.toggle('active', t.dataset.tab === name));
-  document.getElementById('klineToolbar').style.display = name === 'kline' ? 'flex' : 'none';
-  document.getElementById('minuteToolbar').style.display = name === 'minute' ? 'flex' : 'none';
-
-  if (name === 'minute') {
-    // 按需加载:切到分钟 tab 才拉可选日期(只拉一次),默认最近一天
-    if (!state.minuteLoaded) {
-      state.minuteLoaded = true;
-      loadMinuteDates().then(loadMinute);
-    } else {
-      loadMinute();  // 日期已缓存,直接按当前选中日拉数据
-    }
-  } else {
-    loadKline();  // 切回 K 线(数据可能已过期)直接重拉
-  }
-}
-
-function handlePeriod(p) {
-  state.period = p;
-  document.querySelectorAll('#periodGroup button').forEach(b =>
-    b.classList.toggle('active', b.dataset.period === p));
-  loadKline();
-}
-
-function handleAdjust(a) {
-  state.adjust = a;
-  document.querySelectorAll('#adjustGroup button').forEach(b =>
-    b.classList.toggle('active', b.dataset.adjust === a));
-  loadKline();
-}
-
-/* 分钟K 日期限制:只允许选有数据的交易日(抄 trade disabledDate) */
-function onMinuteDayChange() {
-  const input = document.getElementById('minuteDay');
-  const v = input.value;
-  if (v && !state.minuteDates.includes(v)) {
-    alert('该日无分钟数据');
-    input.value = state.minuteDay;  // 回滚到上次合法值
-    return;
-  }
-  state.minuteDay = v;
-  loadMinute();
-}
-
-document.querySelectorAll('.tab').forEach(t =>
-  t.addEventListener('click', () => switchTab(t.dataset.tab)));
-document.querySelectorAll('#periodGroup button').forEach(b =>
-  b.addEventListener('click', () => handlePeriod(b.dataset.period)));
-document.querySelectorAll('#adjustGroup button').forEach(b =>
-  b.addEventListener('click', () => handleAdjust(b.dataset.adjust)));
-document.getElementById('minuteDay').addEventListener('change', onMinuteDayChange);
-window.addEventListener('resize', () => { if (chart) chart.resize(); });
-
-// 初始加载:先取股票名 + 日K
-loadStockName();
-loadKline();
+KlineRender.mountKline(document.getElementById('klineMount'), {
+  code,
+  hitDay,
+  defaultRangeDays: 180,
+}).loadInitial();
 </script>
 </body>
 </html>

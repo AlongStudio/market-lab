@@ -114,17 +114,21 @@ def get_minute_dates(
 def list_stocks(
     market: Optional[str] = None,
     keyword: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_session),
 ):
-    sql = "SELECT stock_code, stock_name, market, status FROM stocks WHERE 1=1"
+    sql = ("SELECT stock_code, stock_name, market, status, pinyin_initials "
+           "FROM stocks WHERE 1=1")
     params: dict = {}
     if market:
         sql += " AND market=:market"
         params["market"] = market
     if keyword:
-        sql += " AND (stock_code LIKE :kw OR stock_name LIKE :kw)"
+        sql += (" AND (stock_code LIKE :kw OR stock_name LIKE :kw "
+                "OR pinyin_initials LIKE :kw)")
         params["kw"] = f"%{keyword}%"
-    sql += " ORDER BY stock_code LIMIT 500"
+    sql += " ORDER BY stock_code LIMIT :limit"
+    params["limit"] = limit
     rows = db.execute(text(sql), params).mappings().all()
     return {"data": [dict(r) for r in rows]}
 
