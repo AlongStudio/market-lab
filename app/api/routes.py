@@ -200,6 +200,17 @@ def force_retry_exhausted(db: Session = Depends(get_session)):
     return {"requeued": n}
 
 
+@router.post("/tasks/requeue-skipped")
+def requeue_skipped_tasks(db: Session = Depends(get_session)):
+    """把 SKIPPED 任务批量重置为 PENDING(retry_count 清零)。
+
+    一次性恢复工具,用于根因修复后(如 BJ 920xxx 前缀 bug 修复、东财解封后)
+    把历史置位的 SKIPPED 任务批量放回队列。不做定时任务。
+    """
+    n = task_runner.requeue_skipped(db)
+    return {"requeued": n}
+
+
 @router.post("/stats/refresh")
 def refresh_stats(db: Session = Depends(get_session)):
     """全量重算 stock_stats(也有定时任务每 13 分钟自动跑)。供初始化/调试立即刷新。"""

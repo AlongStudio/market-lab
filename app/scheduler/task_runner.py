@@ -216,3 +216,16 @@ def force_requeue_exhausted(db: Session) -> int:
     )
     db.commit()
     return result.rowcount
+
+
+def requeue_skipped(db: Session) -> int:
+    """把 SKIPPED 任务批量重置为 PENDING(retry_count 清零)。
+    供根因修复后手动触发(如 BJ 920xxx 前缀 bug 修复、东财解封后),
+    一次性恢复工具,不做定时任务。
+    """
+    result = db.execute(
+        text("UPDATE fetch_task SET status='PENDING', locked_at=NULL, "
+             "retry_count=0, last_error=NULL WHERE status='SKIPPED'"),
+    )
+    db.commit()
+    return result.rowcount
