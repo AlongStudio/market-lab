@@ -59,6 +59,19 @@
       <button onclick="applyConfig()">应用</button>
       <span class="muted" id="applyMsg"></span>
     </div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;
+                display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;
+                    font-size:13px;font-weight:500;">
+        <input id="cfg-intraday_mix_daily" type="checkbox"
+               onchange="applyMixDaily()" style="cursor:pointer;">
+        盘中混跑日K
+        <span class="muted" style="font-weight:400">
+          (交易日 09:30-16:00;开启后允许日K组与分钟K混跑,分钟K优先,不饿死)
+        </span>
+      </label>
+      <span class="muted" id="mixDailyMsg" style="font-size:12px"></span>
+    </div>
   </section>
 
   <section>
@@ -110,22 +123,30 @@ const CFG_LABELS = {
   'offhour_workers': '非交易 worker',
   'intraday_workers': '交易 worker',
   'tick_interval_sec': 'tick 间隔(秒)',
+  'intraday_mix_daily': '盘中混跑日K',
 };
-let _cfg = {};  // key -> {effective,min,max,updated_at,updated_by}
+let _cfg = {};  // key -> {effective,min,max,updated_at,updated_by,type}
 
 async function loadTuning() {
   const d = await api('/api/config');
   _cfg = {};
   d.data.forEach(c => { _cfg[c.key] = c; });
-  document.getElementById('tuningStats').innerHTML = d.data.map(c =>
-    `<div class="stat-item"><div class="stat-label">${CFG_LABELS[c.key] || c.key}</div>` +
-    `<div class="stat-value">${c.effective} <span class="muted">(${c.min}~${c.max})</span></div></div>`
-  ).join('');
+  document.getElementById('tuningStats').innerHTML = d.data.map(c => {
+    const rangeTxt = c.type === 'bool'
+      ? '<span class="muted">(开关)</span>'
+      : `<span class="muted">(${c.min}~${c.max})</span>`;
+    return `<div class="stat-item"><div class="stat-label">${CFG_LABELS[c.key] || c.key}</div>` +
+           `<div class="stat-value">${c.effective} ${rangeTxt}</div></div>`;
+  }).join('');
   d.data.forEach(c => {
     const el = document.getElementById('cfg-' + c.key);
     if (!el) return;
-    el.min = c.min; el.max = c.max;
-    if (document.activeElement !== el) el.value = c.effective;
+    if (c.type === 'bool') {
+      el.checked = (c.effective === 'true');
+    } else {
+      el.min = c.min; el.max = c.max;
+      if (document.activeElement !== el) el.value = c.effective;
+    }
   });
   const latest = d.data.filter(c => c.updated_at)
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
@@ -147,6 +168,7 @@ async function applyConfig() {
     if (isNaN(v)) continue;
     if (_cfg[k] && v !== Number(_cfg[k].effective)) payload[k] = el.value;
   }
+  // intraday_mix_daily 由独立 checkbox 走 applyMixDaily,这里跳过
   if (!Object.keys(payload).length) { showApplyMsg('无改动', false); return; }
   showApplyMsg('应用中…', true);
   try {
@@ -161,6 +183,33 @@ async function applyConfig() {
     let detail = e.message;
     try { detail = JSON.parse(e.message).detail || detail; } catch (_) {}
     showApplyMsg('失败: ' + detail, false);
+  }
+}
+
+async function applyMixDaily() {
+  const el = document.getElementById('cfg-intraday_mix_daily');
+  const msg = document.getElementById('mixDailyMsg');
+  const v = el.checked;
+  msg.textContent = '应用中…';
+  msg.style.color = '#8a8f99';
+  try {
+    await api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intraday_mix_daily: v }),
+    });
+    msg.textContent = v ? '已开启混跑,≤1 个 tick 后生效' : '已关闭混跑,≤1 个 tick 后生效';
+    msg.style.color = '#2e7d32';
+    setTimeout(loadTuning, 3000);
+  } catch (e) {
+    let detail = e.message;
+    try { detail = JSON.parse(e.message).detail || detail; } catch (_) {}
+    msg.textContent = '失败: ' + detail;
+    msg.style.color = '#c62828';
+    // 回滚 checkbox 到服务端真值
+    const cur = await api('/api/config');
+    const k = cur.data.find(c => c.key === 'intraday_mix_daily');
+    if (k) el.checked = (k.effective === 'true');
   }
 }
 
