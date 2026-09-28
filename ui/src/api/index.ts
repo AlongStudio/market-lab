@@ -5,6 +5,8 @@ import type {
   TasksSummary,
   TasksResponse,
   DataOverview,
+  AnalysisLatestResponse,
+  AnalysisResult,
 } from '../types'
 
 const TOKEN_KEY = 'market-lab-token'
@@ -109,4 +111,19 @@ export const tasksApi = {
 export const dataApi = {
   overview: (): Promise<DataOverview> => request('/data/overview'),
   health: (): Promise<{ status: string }> => request('/health'),
+}
+
+export const analysisApi = {
+  /** 最近一个有结果快照的交易日全部结果(列表页默认视图) */
+  latest: (): Promise<AnalysisLatestResponse> => request('/analysis/latest'),
+  /** 某交易日全部结果 / 单任务某日结果 */
+  results: (day?: string, taskId?: number): Promise<{ data: AnalysisResult[] }> => {
+    const params = new URLSearchParams()
+    if (day) params.set('day', day)
+    if (taskId) params.set('task_id', String(taskId))
+    return request(`/analysis/results?${params}`)
+  },
+  /** 该股有哪些分钟数据的交易日(详情页 DatePicker 限可选日期) */
+  minuteDates: (code: string): Promise<{ code: string; dates: string[] }> =>
+    request(`/kline/minute/dates?code=${code}`),
 }

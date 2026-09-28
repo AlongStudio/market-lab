@@ -73,3 +73,27 @@ export interface DataOverview {
   stocks: { rows: number }
   minute: { rows: number; tables: number }
 }
+
+// ── K线分析选股(T2)──────────────────────────────────────────────
+
+export interface AnalysisResultRow {
+  /** 动态列:SQL 决定(stock_code 首列 + 其余业务列),值统一转 string */
+  [key: string]: string | number | null
+}
+
+export interface AnalysisResult {
+  id: number
+  task_id: number
+  trading_day: string
+  status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+  matched_count: number
+  result_json: string
+  error_msg?: string | null
+  name: string
+  description?: string
+}
+
+export interface AnalysisLatestResponse {
+  day: string | null
+  data: AnalysisResult[]
+}
