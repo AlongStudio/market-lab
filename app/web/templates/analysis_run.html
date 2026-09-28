@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>market-lab 策略执行</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
+         background: #f5f6f8; color: #1f2329; }
+  header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px;
+           display: flex; justify-content: space-between; align-items: center; }
+  header .nav { display: flex; align-items: center; gap: 18px; }
+  header .nav a { color: #cfd3d9; font-size: 14px; text-decoration: none; }
+  header .nav a:hover { color: #fff; }
+  header .logout { background: transparent; border: 1px solid #5a5f66; color: #cfd3d9;
+                   padding: 5px 12px; font-size: 13px; }
+  header .logout:hover { background: #2c3138; }
+  .wrap { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+  section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid #eee; margin-bottom: 14px; flex-wrap: wrap; }
+  .tab { padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent;
+         color: #8a8f99; font-size: 13px; }
+  .tab.active { border-bottom-color: #2f7cf6; color: #2f7cf6; font-weight: 500; }
+  .tab.inactive { opacity: 0.6; }
+  .card-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .card-head .title { font-size: 14px; font-weight: 600; }
+  .card-head .spacer { flex: 1; }
+  .muted { color: #8a8f99; font-size: 12px; }
+  .err { color: #c62828; font-size: 12px; word-break: break-all; }
+  .mod-tip { font-size: 12px; color: #e65100; background: #fff3e0; padding: 4px 10px;
+             border-radius: 4px; display: inline-block; }
+  input[type=date], input[type=text] { padding: 6px 10px; border: 1px solid #dcdfe6;
+                                       border-radius: 6px; font-size: 13px; }
+  button { background: #2f7cf6; color: #fff; border: 0; padding: 6px 14px;
+           border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #1f6ae0; }
+  button:disabled { background: #c9d2dd; cursor: not-allowed; }
+  button.ghost { background: #fff; color: #1f2329; border: 1px solid #dcdfe6; }
+  button.ghost:hover { background: #f5f8ff; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
+  th { color: #8a8f99; font-weight: 500; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: #f5f8ff; }
+  tbody tr.active { background: #e3f2fd; }
+  .empty { text-align: center; color: #8a8f99; padding: 40px 0; }
+
+  /* KlineRender 注入的 DOM */
+  .kr-tabs { display: flex; gap: 0; border-bottom: 1px solid #eee; margin-bottom: 14px; }
+  .kr-tab { padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent;
+            color: #8a8f99; }
+  .kr-tab.active { border-bottom-color: #2f7cf6; color: #2f7cf6; font-weight: 500; }
+  .kr-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .kr-btn-group { display: flex; border: 1px solid #dcdfe6; border-radius: 6px; overflow: hidden; }
+  .kr-btn-group button { background: #fff; color: #1f2329; border: 0; padding: 5px 14px;
+                         cursor: pointer; font-size: 13px; }
+  .kr-btn-group button.active { background: #2f7cf6; color: #fff; }
+  .kr-muted { color: #8a8f99; font-size: 12px; }
+  .kr-chart { width: 100%; height: 500px; }
+  .kr-empty { text-align: center; color: #8a8f99; padding: 80px 0; }
+  .kr-minute-day { padding: 5px 10px; border: 1px solid #dcdfe6; border-radius: 6px; font-size: 13px; }
+</style>
+</head>
+<body>
+<header><span>market-lab 策略执行</span>
+  <div class="nav">
+    <a href="/dashboard">管理面板</a>
+    <a href="/kline">K线查询</a>
+    <a href="/analysis">分析选股</a>
+    <a href="/analysis/strategies">策略管理</a>
+    <a href="/settings">运行设置</a>
+    <button class="logout" onclick="logout()">退出登录</button>
+  </div>
+</header>
+<div class="wrap">
+  <section>
+    <div class="tabs" id="strategyTabs"></div>
+    <div id="panel">
+      <div class="card-head">
+        <span class="title" id="curName">-</span>
+        <span class="muted" id="curDesc"></span>
+        <div class="spacer"></div>
+        <label class="muted">基准日</label>
+        <input type="date" id="baseDay">
+        <button id="runBtn">执行</button>
+        <span class="muted" id="runTip"></span>
+      </div>
+      <div id="hitsBox" style="display:none">
+        <div id="truncTip" class="mod-tip" style="display:none;margin-bottom:8px"></div>
+        <table id="hitsTable">
+          <thead></thead>
+          <tbody id="hitsBody"></tbody>
+        </table>
+      </div>
+      <div id="emptyTip" class="empty">点「执行」开始分析</div>
+    </div>
+  </section>
+
+  <section id="inlineKlineSec" style="display:none">
+    <div class="card-head">
+      <span class="title" id="inlineCode"></span>
+      <span class="muted" id="inlineName"></span>
+      <div class="spacer"></div>
+      <button class="ghost" id="closeInline">收起</button>
+    </div>
+    <div id="inlineMount"></div>
+  </section>
+</div>
+
+<script src="/static/echarts.min.js"></script>
+<script src="/static/kline-render.js"></script>
+<script>
+function getToken() { return localStorage.getItem('token') || ''; }
+
+function gotoLogin() {
+  localStorage.removeItem('token');
+  location.replace('/login');
+}
+
+if (!getToken()) gotoLogin();
+
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, {
+    'Authorization': 'Bearer ' + getToken(),
+  });
+  const r = await fetch(path, opts);
+  if (r.status === 401) { gotoLogin(); throw new Error('未授权'); }
+  const refreshed = r.headers.get('X-Refresh-Token');
+  if (refreshed) localStorage.setItem('token', refreshed);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function logout() { gotoLogin(); }
+
+const esc = KlineRender.esc;
+
+const state = {
+  tasks: [],
+  curTask: null,
+  curRows: [],
+  inlineController: null,
+};
+
+const tabsEl = document.getElementById('strategyTabs');
+const curName = document.getElementById('curName');
+const curDesc = document.getElementById('curDesc');
+const baseDay = document.getElementById('baseDay');
+const runBtn = document.getElementById('runBtn');
+const runTip = document.getElementById('runTip');
+const hitsBox = document.getElementById('hitsBox');
+const hitsBody = document.getElementById('hitsBody');
+const hitsHead = document.querySelector('#hitsTable thead');
+const truncTip = document.getElementById('truncTip');
+const emptyTip = document.getElementById('emptyTip');
+const inlineKlineSec = document.getElementById('inlineKlineSec');
+const inlineCode = document.getElementById('inlineCode');
+const inlineName = document.getElementById('inlineName');
+const inlineMount = document.getElementById('inlineMount');
+const closeInline = document.getElementById('closeInline');
+
+function renderTabs() {
+  if (!state.tasks.length) {
+    tabsEl.innerHTML = '<div class="muted" style="padding:10px 0">暂无策略,请到<a href="/analysis/strategies">策略管理</a>新建</div>';
+    return;
+  }
+  tabsEl.innerHTML = state.tasks.map(t => {
+    const cls = 'tab' + (state.curTask && t.id === state.curTask.id ? ' active' : '') + (t.is_active ? '' : ' inactive');
+    return `<div class="${cls}" data-id="${t.id}">${esc(t.name)}</div>`;
+  }).join('');
+  tabsEl.querySelectorAll('[data-id]').forEach(el => {
+    el.addEventListener('click', () => selectTask(parseInt(el.dataset.id, 10)));
+  });
+}
+
+function selectTask(id) {
+  const t = state.tasks.find(x => x.id === id);
+  if (!t) return;
+  state.curTask = t;
+  state.curRows = [];
+  renderTabs();
+  curName.textContent = t.name;
+  curDesc.textContent = t.description || '';
+  baseDay.value = '';
+  runTip.textContent = '';
+  hitsBox.style.display = 'none';
+  emptyTip.style.display = 'block';
+  hideInline();
+}
+
+runBtn.addEventListener('click', async () => {
+  if (!state.curTask) return;
+  runBtn.disabled = true;
+  runTip.textContent = '执行中…';
+  hideInline();
+  try {
+    const body = JSON.stringify({
+      trading_day: baseDay.value || null,
+      limit: 100,
+    });
+    const res = await api(`/api/analysis/tasks/${state.curTask.id}/test-run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    renderHits(res);
+  } catch (e) {
+    runTip.textContent = '';
+    emptyTip.style.display = 'none';
+    hitsBox.style.display = 'block';
+    hitsHead.innerHTML = '';
+    hitsBody.innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`;
+  } finally {
+    runBtn.disabled = false;
+  }
+});
+
+function renderHits(res) {
+  emptyTip.style.display = 'none';
+  hitsBox.style.display = 'block';
+  runTip.textContent = `基准日 ${res.trading_day}`;
+  const rows = res.rows || [];
+  state.curRows = rows;
+  if (res.truncated) {
+    truncTip.textContent = '⚠ 命中超过 100 行,已截断展示前 100 行';
+    truncTip.style.display = 'inline-block';
+  } else {
+    truncTip.style.display = 'none';
+  }
+  if (!rows.length) {
+    hitsHead.innerHTML = '';
+    hitsBody.innerHTML = '<tr><td class="muted" style="padding:20px;text-align:center">当日无命中</td></tr>';
+    return;
+  }
+  const cols = Object.keys(rows[0]);
+  const headCols = ['stock_code', 'stock_name'].filter(c => cols.includes(c));
+  const extra = cols.filter(c => c !== 'stock_code' && c !== 'stock_name');
+  const allCols = headCols.concat(extra);
+  hitsHead.innerHTML = '<tr>' + allCols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>';
+  hitsBody.innerHTML = rows.map((r, i) =>
+    `<tr data-idx="${i}">` +
+    allCols.map(c => {
+      const v = r[c];
+      return `<td>${v === null || v === undefined ? '-' : esc(v)}</td>`;
+    }).join('') +
+    '</tr>'
+  ).join('');
+  hitsBody.querySelectorAll('[data-idx]').forEach(tr => {
+    tr.addEventListener('click', () => showInline(parseInt(tr.dataset.idx, 10)));
+  });
+}
+
+function hideInline() {
+  if (state.inlineController) {
+    state.inlineController.dispose();
+    state.inlineController = null;
+  }
+  inlineKlineSec.style.display = 'none';
+  hitsBody.querySelectorAll('tr.active').forEach(tr => tr.classList.remove('active'));
+}
+
+function showInline(idx) {
+  const row = state.curRows[idx];
+  if (!row) return;
+  hideInline();
+  hitsBody.querySelectorAll('[data-idx]').forEach(tr => {
+    tr.classList.toggle('active', parseInt(tr.dataset.idx, 10) === idx);
+  });
+  inlineCode.textContent = row.stock_code || '';
+  inlineName.textContent = row.stock_name || '';
+  inlineKlineSec.style.display = 'block';
+  state.inlineController = KlineRender.mountKline(inlineMount, {
+    code: row.stock_code,
+    defaultRangeDays: 120,
+  });
+  state.inlineController.loadInitial();
+  inlineKlineSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+closeInline.addEventListener('click', hideInline);
+
+async function init() {
+  try {
+    const res = await api('/api/analysis/tasks');
+    state.tasks = res.data || [];
+    renderTabs();
+    if (state.tasks.length) selectTask(state.tasks[0].id);
+  } catch (e) {
+    tabsEl.innerHTML = `<div class="err">加载失败: ${esc(e.message)}</div>`;
+  }
+}
+
+init();
+</script>
+</body>
+</html>

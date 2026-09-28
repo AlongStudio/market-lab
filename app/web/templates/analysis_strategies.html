@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>market-lab 策略管理</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
+         background: #f5f6f8; color: #1f2329; }
+  header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px;
+           display: flex; justify-content: space-between; align-items: center; }
+  header .nav { display: flex; align-items: center; gap: 18px; }
+  header .nav a { color: #cfd3d9; font-size: 14px; text-decoration: none; }
+  header .nav a:hover { color: #fff; }
+  header .logout { background: transparent; border: 1px solid #5a5f66; color: #cfd3d9;
+                   padding: 5px 12px; font-size: 13px; }
+  header .logout:hover { background: #2c3138; }
+  .wrap { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+  section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
+  th { color: #8a8f99; font-weight: 500; }
+  tbody tr:hover { background: #f5f8ff; }
+  button { background: #2f7cf6; color: #fff; border: 0; padding: 6px 14px;
+           border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #1f6ae0; }
+  button:disabled { background: #c9d2dd; cursor: not-allowed; }
+  button.ghost { background: #fff; color: #1f2329; border: 1px solid #dcdfe6; }
+  button.ghost:hover { background: #f5f8ff; }
+  button.danger { background: #fff; color: #c62828; border: 1px solid #f0c0c0; }
+  button.danger:hover { background: #ffebee; }
+  .muted { color: #8a8f99; font-size: 12px; }
+  .err { color: #c62828; font-size: 12px; word-break: break-all; white-space: pre-wrap; }
+  .card-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .card-head .title { font-size: 14px; font-weight: 600; }
+  .spacer { flex: 1; }
+  .switch { position: relative; display: inline-block; width: 36px; height: 18px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+                    background: #c9d2dd; border-radius: 18px; transition: .2s; }
+  .switch .slider:before { content: ""; position: absolute; height: 14px; width: 14px;
+                           left: 2px; bottom: 2px; background: #fff; border-radius: 50%; transition: .2s; }
+  .switch input:checked + .slider { background: #2f7cf6; }
+  .switch input:checked + .slider:before { transform: translateX(18px); }
+  dialog { border: 0; border-radius: 10px; padding: 0; width: 720px; box-shadow: 0 8px 24px rgba(0,0,0,.15); }
+  dialog .modal-head { padding: 14px 20px; border-bottom: 1px solid #eee; font-size: 15px; font-weight: 600; }
+  dialog .modal-body { padding: 16px 20px; max-height: 70vh; overflow-y: auto; }
+  dialog .modal-foot { padding: 12px 20px; border-top: 1px solid #eee; display: flex; justify-content: flex-end; gap: 10px; }
+  dialog label { display: block; margin-bottom: 12px; font-size: 13px; color: #4a4f59; }
+  dialog input[type=text], dialog textarea { width: 100%; padding: 6px 10px; border: 1px solid #dcdfe6;
+                                             border-radius: 6px; font-size: 13px; font-family: inherit; }
+  dialog textarea#f_sql { font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; }
+  dialog textarea { resize: vertical; }
+  .row-actions { display: flex; gap: 8px; }
+</style>
+</head>
+<body>
+<header><span>market-lab 策略管理</span>
+  <div class="nav">
+    <a href="/dashboard">管理面板</a>
+    <a href="/kline">K线查询</a>
+    <a href="/analysis">分析选股</a>
+    <a href="/analysis/run">策略执行</a>
+    <a href="/settings">运行设置</a>
+    <button class="logout" onclick="logout()">退出登录</button>
+  </div>
+</header>
+<div class="wrap">
+  <section>
+    <div class="card-head">
+      <span class="title">分析选股策略</span>
+      <span class="muted" id="hint"></span>
+      <div class="spacer"></div>
+      <button id="newBtn">+ 新建策略</button>
+    </div>
+    <table id="strategyTable">
+      <thead><tr>
+        <th style="width:50px">ID</th>
+        <th>名称</th>
+        <th style="width:80px">启用</th>
+        <th style="width:120px">最近命中</th>
+        <th style="width:160px">更新时间</th>
+        <th style="width:160px">操作</th>
+      </tr></thead>
+      <tbody id="strategyBody"></tbody>
+    </table>
+  </section>
+</div>
+
+<dialog id="editDialog">
+  <div class="modal-head" id="dlgTitle">新建策略</div>
+  <div class="modal-body">
+    <label>名称
+      <input type="text" id="f_name" placeholder="如:缺口放大">
+    </label>
+    <label>描述
+      <textarea id="f_desc" rows="2" placeholder="策略说明,可选"></textarea>
+    </label>
+    <label>result_sql (以 SELECT 开头,用 :trading_day 引用基准日,首列必须为 stock_code)
+      <textarea id="f_sql" rows="14" placeholder="SELECT stock_code, stock_name FROM stocks WHERE ..."></textarea>
+    </label>
+    <div id="sqlErr" class="err"></div>
+  </div>
+  <div class="modal-foot">
+    <button class="ghost" id="cancelBtn">取消</button>
+    <button id="saveBtn">保存</button>
+  </div>
+</dialog>
+
+<script>
+function getToken() { return localStorage.getItem('token') || ''; }
+
+function gotoLogin() {
+  localStorage.removeItem('token');
+  location.replace('/login');
+}
+
+if (!getToken()) gotoLogin();
+
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, {
+    'Authorization': 'Bearer ' + getToken(),
+  });
+  const r = await fetch(path, opts);
+  if (r.status === 401) { gotoLogin(); throw new Error('未授权'); }
+  const refreshed = r.headers.get('X-Refresh-Token');
+  if (refreshed) localStorage.setItem('token', refreshed);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function logout() { gotoLogin(); }
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+const dlg = document.getElementById('editDialog');
+const fId = null;  // 当前编辑的 task_id,null=新建
+let editingId = null;
+
+function openCreate() {
+  editingId = null;
+  document.getElementById('dlgTitle').textContent = '新建策略';
+  document.getElementById('f_name').value = '';
+  document.getElementById('f_desc').value = '';
+  document.getElementById('f_sql').value = '';
+  document.getElementById('sqlErr').textContent = '';
+  dlg.showModal();
+}
+
+function openEdit(task) {
+  editingId = task.id;
+  document.getElementById('dlgTitle').textContent = '编辑策略 #' + task.id;
+  document.getElementById('f_name').value = task.name || '';
+  document.getElementById('f_desc').value = task.description || '';
+  document.getElementById('f_sql').value = task.result_sql || '';
+  document.getElementById('sqlErr').textContent = '';
+  dlg.showModal();
+}
+
+document.getElementById('newBtn').addEventListener('click', openCreate);
+document.getElementById('cancelBtn').addEventListener('click', () => dlg.close());
+dlg.addEventListener('click', (e) => {
+  // 点 dialog 外部关闭
+  if (e.target === dlg) dlg.close();
+});
+
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  const name = document.getElementById('f_name').value.trim();
+  const desc = document.getElementById('f_desc').value.trim();
+  const sql = document.getElementById('f_sql').value;
+  const errEl = document.getElementById('sqlErr');
+  errEl.textContent = '';
+  if (!name) { errEl.textContent = '名称不能为空'; return; }
+  if (!sql.trim()) { errEl.textContent = 'result_sql 不能为空'; return; }
+  const body = JSON.stringify({ name, description: desc, result_sql: sql });
+  const headers = { 'Content-Type': 'application/json' };
+  try {
+    if (editingId == null) {
+      await api('/api/analysis/tasks', { method: 'POST', headers, body });
+    } else {
+      await api(`/api/analysis/tasks/${editingId}`, { method: 'PUT', headers, body });
+    }
+    dlg.close();
+    load();
+  } catch (e) {
+    errEl.textContent = e.message || '保存失败';
+  }
+});
+
+async function toggleActive(task) {
+  try {
+    await api(`/api/analysis/tasks/${task.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_active: !task.is_active }),
+    });
+    load();
+  } catch (e) {
+    alert('切换失败: ' + e.message);
+  }
+}
+
+async function removeTask(task) {
+  if (!confirm(`确认删除策略「${task.name}」?\n该策略的所有结果快照会一并删除。`)) return;
+  try {
+    await api(`/api/analysis/tasks/${task.id}`, { method: 'DELETE' });
+    load();
+  } catch (e) {
+    alert('删除失败: ' + e.message);
+  }
+}
+
+function renderRow(t) {
+  const lastHit = t.last_day
+    ? `${esc(t.last_day)} ${t.last_status === 'SUCCESS' ? `命中 ${t.last_count ?? 0}` : esc(t.last_status || '')}`
+    : '<span class="muted">无</span>';
+  const lastErr = t.last_status === 'FAILED' && t.last_error
+    ? `<div class="err" style="margin-top:4px">${esc(t.last_error)}</div>` : '';
+  return `<tr data-id="${t.id}">
+    <td>${t.id}</td>
+    <td>
+      <div>${esc(t.name)}</div>
+      ${t.description ? `<div class="muted">${esc(t.description)}</div>` : ''}
+    </td>
+    <td>
+      <label class="switch">
+        <input type="checkbox" ${t.is_active ? 'checked' : ''} data-toggle="${t.id}">
+        <span class="slider"></span>
+      </label>
+    </td>
+    <td>${lastHit}${lastErr}</td>
+    <td class="muted">${esc(t.updated_at)}</td>
+    <td>
+      <div class="row-actions">
+        <button class="ghost" data-edit="${t.id}">编辑</button>
+        <button class="danger" data-del="${t.id}">删除</button>
+      </div>
+    </td>
+  </tr>`;
+}
+
+async function load() {
+  const hint = document.getElementById('hint');
+  hint.textContent = '加载中…';
+  try {
+    const res = await api('/api/analysis/tasks');
+    const list = res.data || [];
+    document.getElementById('strategyBody').innerHTML = list.map(renderRow).join('') ||
+      '<tr><td colspan="6" class="muted" style="padding:20px;text-align:center">暂无策略,点「新建策略」创建</td></tr>';
+    hint.textContent = `共 ${list.length} 个策略`;
+    bindRowEvents();
+  } catch (e) {
+    hint.textContent = '加载失败: ' + e.message;
+  }
+}
+
+function bindRowEvents() {
+  document.querySelectorAll('[data-toggle]').forEach(el => {
+    el.addEventListener('change', () => {
+      const id = el.dataset.toggle;
+      const task = lastList.find(t => String(t.id) === id);
+      if (task) toggleActive(task);
+    });
+  });
+  document.querySelectorAll('[data-edit]').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.dataset.edit;
+      const task = lastList.find(t => String(t.id) === id);
+      if (task) openEdit(task);
+    });
+  });
+  document.querySelectorAll('[data-del]').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.dataset.del;
+      const task = lastList.find(t => String(t.id) === id);
+      if (task) removeTask(task);
+    });
+  });
+}
+
+let lastList = [];
+async function loadWithCache() {
+  const res = await api('/api/analysis/tasks');
+  lastList = res.data || [];
+  document.getElementById('strategyBody').innerHTML = lastList.map(renderRow).join('') ||
+    '<tr><td colspan="6" class="muted" style="padding:20px;text-align:center">暂无策略,点「新建策略」创建</td></tr>';
+  document.getElementById('hint').textContent = `共 ${lastList.length} 个策略`;
+  bindRowEvents();
+}
+
+loadWithCache();
+</script>
+</body>
+</html>

@@ -31,6 +31,16 @@ def analysis_page(request: Request):
     return templates.TemplateResponse(request, "analysis.html", {})
 
 
+@router.get("/analysis/strategies", response_class=HTMLResponse)
+def analysis_strategies_page(request: Request):
+    return templates.TemplateResponse(request, "analysis_strategies.html", {})
+
+
+@router.get("/analysis/run", response_class=HTMLResponse)
+def analysis_run_page(request: Request):
+    return templates.TemplateResponse(request, "analysis_run.html", {})
+
+
 @router.get("/stock/{code}", response_class=HTMLResponse)
 def stock_detail_page(request: Request, code: str):
     return templates.TemplateResponse(request, "stock_detail.html", {})
