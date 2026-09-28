@@ -73,7 +73,9 @@ def _query_rows(db: Session, sql: str, trading_day, limit: int) -> tuple[list[di
     truncated = len(rows) > limit
     if truncated:
         rows = rows[:limit]
-    if not rows or "stock_code" not in rows[0]:
+    if not rows:
+        return [], False  # 空结果合法,UI 显示"当日无命中"
+    if "stock_code" not in rows[0]:
         raise ValueError("结果缺少 stock_code 列(SQL 首列约定见 docs/plans/T2 §5.3)")
     return rows, truncated
 
