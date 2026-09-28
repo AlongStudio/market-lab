@@ -101,7 +101,6 @@ export const KlinePage: React.FC = () => {
     const dates = klineData.map(d => d.trading_date)
     const values = klineData.map(d => [d.open, d.close, d.low, d.high])
     const volumes = klineData.map(d => d.volume)
-    const pcts = klineData.map(d => d.change_pct)
 
     return {
       animation: false,
@@ -213,8 +212,9 @@ export const KlinePage: React.FC = () => {
 
   return (
     <Layout style={{ minHeight: '100vh', background: '#f5f5f5' }}>
-      <Header style={{ background: '#fff', padding: '0 24px', display: 'flex', alignItems: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
+      <Header style={{ background: '#fff', padding: '0 24px', display: 'flex', alignItems: 'center', gap: 16, boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
         <Title level={3} style={{ margin: 0 }}>market-lab K线</Title>
+        <a href="/ui/analysis" style={{ fontSize: 14, color: '#1677ff' }}>分析选股 →</a>
       </Header>
       <Content style={{ padding: '24px' }}>
         <Card style={{ marginBottom: 16 }}>

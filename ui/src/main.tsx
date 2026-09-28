@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { LoginPage } from './pages/LoginPage'
 import { KlinePage } from './pages/KlinePage'
+import { AnalysisPage } from './pages/AnalysisPage'
+import { StockDetailPage } from './pages/StockDetailPage'
 import './index.css'
 
 const TOKEN_KEY = 'market-lab-token'
@@ -30,6 +32,16 @@ const App: React.FC = () => {
         <Route path="/ui" element={
           <RequireAuth>
             <KlinePage />
+          </RequireAuth>
+        } />
+        <Route path="/ui/analysis" element={
+          <RequireAuth>
+            <AnalysisPage />
+          </RequireAuth>
+        } />
+        <Route path="/ui/stock/:code" element={
+          <RequireAuth>
+            <StockDetailPage />
           </RequireAuth>
         } />
         <Route path="/ui/*" element={
