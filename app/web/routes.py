@@ -24,3 +24,18 @@ def dashboard(request: Request):
 @router.get("/settings", response_class=HTMLResponse)
 def settings(request: Request):
     return templates.TemplateResponse(request, "settings.html", {})
+
+
+@router.get("/analysis", response_class=HTMLResponse)
+def analysis_page(request: Request):
+    return templates.TemplateResponse(request, "analysis.html", {})
+
+
+@router.get("/stock/{code}", response_class=HTMLResponse)
+def stock_detail_page(request: Request, code: str):
+    return templates.TemplateResponse(request, "stock_detail.html", {})
+
+
+@router.get("/kline", response_class=HTMLResponse)
+def kline_page(request: Request):
+    return templates.TemplateResponse(request, "kline.html", {})

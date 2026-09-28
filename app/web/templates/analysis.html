@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>market-lab 分析选股</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
+         background: #f5f6f8; color: #1f2329; }
+  header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px;
+           display: flex; justify-content: space-between; align-items: center; }
+  header .nav { display: flex; align-items: center; gap: 18px; }
+  header .nav a { color: #cfd3d9; font-size: 14px; text-decoration: none; }
+  header .nav a:hover { color: #fff; }
+  header .logout { background: transparent; border: 1px solid #5a5f66; color: #cfd3d9;
+                   padding: 5px 12px; font-size: 13px; }
+  header .logout:hover { background: #2c3138; }
+  .wrap { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+  section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
+  th { color: #8a8f99; font-weight: 500; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: #f5f8ff; }
+  button { background: #2f7cf6; color: #fff; border: 0; padding: 6px 14px;
+           border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #1f6ae0; }
+  button:disabled { background: #c9d2dd; cursor: not-allowed; }
+  .muted { color: #8a8f99; font-size: 12px; }
+  .err { color: #c62828; font-size: 12px; word-break: break-all; }
+  .status-badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 12px;
+                  font-weight: 500; }
+  .status-success { background: #e8f5e9; color: #2e7d32; }
+  .status-failed { background: #ffebee; color: #c62828; }
+  .status-running { background: #e3f2fd; color: #1565c0; }
+  .status-pending { background: #f0f2f5; color: #616161; }
+  .filters { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .filters input, .filters select { padding: 6px 10px; border: 1px solid #dcdfe6;
+                                     border-radius: 6px; font-size: 13px; }
+  .card-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .card-head .title { font-size: 14px; font-weight: 600; }
+  .spacer { flex: 1; }
+  .mod-tip { font-size: 12px; color: #8a8f99; }
+</style>
+</head>
+<body>
+<header><span>market-lab 分析选股</span>
+  <div class="nav">
+    <a href="/dashboard">管理面板</a>
+    <a href="/kline">K线查询</a>
+    <a href="/settings">运行设置</a>
+    <button class="logout" onclick="logout()">退出登录</button>
+  </div>
+</header>
+<div class="wrap">
+  <section>
+    <div class="filters">
+      <input id="dayInput" type="date">
+      <button onclick="loadResults()">查询</button>
+      <span class="muted" id="dayHint"></span>
+    </div>
+    <div class="muted" id="loadingTip" style="display:none">加载中…</div>
+    <div id="cards"></div>
+  </section>
+</div>
+
+<script>
+function getToken() { return localStorage.getItem('token') || ''; }
+
+function gotoLogin() {
+  localStorage.removeItem('token');
+  location.replace('/login');
+}
+
+// 无 token 直接回登录页,避免空跑一圈请求
+if (!getToken()) gotoLogin();
+
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, {
+    'Authorization': 'Bearer ' + getToken(),
+  });
+  const r = await fetch(path, opts);
+  if (r.status === 401) { gotoLogin(); throw new Error('未授权'); }
+  // 滑动续期:服务端每次有效响应都回发新 token
+  const refreshed = r.headers.get('X-Refresh-Token');
+  if (refreshed) localStorage.setItem('token', refreshed);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function logout() { gotoLogin(); }
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+const STATUS_BADGE = {
+  SUCCESS: 'status-success',
+  FAILED: 'status-failed',
+  RUNNING: 'status-running',
+  PENDING: 'status-pending',
+};
+
+function parseStocks(r) {
+  if (!r.result_json) return [];
+  try {
+    const p = JSON.parse(r.result_json);
+    return Array.isArray(p && p.stocks) ? p.stocks : [];
+  } catch (e) { return []; }
+}
+
+let curDay = null;  // 当前展示的交易日(带往详情页作命中标注)
+
+function renderCard(r) {
+  const stocks = parseStocks(r);
+  const badge = STATUS_BADGE[r.status] || 'status-pending';
+  // 动态列:SQL 决定(stock_code/stock_name 前置,其余透传,上限防超宽)
+  const extraCols = stocks.length
+    ? Object.keys(stocks[0]).filter(k => k !== 'stock_code' && k !== 'stock_name').slice(0, 8)
+    : [];
+  const headCols = ['代码', '名称'].concat(extraCols).map(c => esc(c));
+  let bodyHtml;
+  if (r.status === 'FAILED') {
+    bodyHtml = `<div class="err">${esc(r.error_msg || '执行失败')}</div>`;
+  } else if (stocks.length === 0) {
+    bodyHtml = `<div class="muted">${r.status === 'SUCCESS' ? '当日无命中' : '暂无结果'}</div>`;
+  } else {
+    const cols = ['stock_code', 'stock_name'].concat(extraCols);
+    bodyHtml = `<table><thead><tr>${headCols.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>` +
+      stocks.map(s => `<tr data-code="${esc(s.stock_code)}">` +
+        cols.map(c => {
+          const v = s[c];
+          return `<td>${v === null || v === undefined ? '-' : esc(v)}</td>`;
+        }).join('') + '</tr>').join('') + '</tbody></table>';
+  }
+  return `<section>
+    <div class="card-head">
+      <span class="title">${esc(r.name)}</span>
+      <span class="status-badge ${badge}">${esc(r.status)}</span>
+      ${r.status === 'SUCCESS' ? `<span class="muted">命中 ${r.matched_count} 只</span>` : ''}
+      ${r.status === 'FAILED' ? `<button data-testrun="${r.task_id}">重跑</button><span class="mod-tip" data-msg="${r.task_id}"></span>` : ''}
+    </div>
+    ${r.description ? `<div class="muted" style="margin-bottom:8px">${esc(r.description)}</div>` : ''}
+    ${bodyHtml}
+  </section>`;
+}
+
+function bindRows() {
+  document.querySelectorAll('#cards tbody tr[data-code]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const code = tr.dataset.code;
+      location.href = '/stock/' + encodeURIComponent(code) + (curDay ? '?day=' + curDay : '');
+    });
+  });
+}
+
+function bindTestRun() {
+  document.querySelectorAll('button[data-testrun]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const taskId = btn.dataset.testrun;
+      btn.disabled = true;
+      const tip = document.querySelector(`[data-msg="${taskId}"]`);
+      tip.textContent = '试跑中…';
+      try {
+        const res = await api(`/api/analysis/tasks/${taskId}/test-run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trading_day: curDay, limit: 50 }),
+        });
+        const stocks = parseStocks({ result_json: JSON.stringify(res) });
+        tip.textContent = `试跑命中 ${res.matched_count != null ? res.matched_count : stocks.length} 只(不落快照)`;
+      } catch (e) {
+        tip.textContent = '试跑失败';
+        tip.style.color = '#c62828';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+async function loadResults() {
+  const el = document.getElementById('dayInput');
+  const hint = document.getElementById('dayHint');
+  const tip = document.getElementById('loadingTip');
+  const day = el.value;
+  tip.style.display = 'block';
+  hint.textContent = '';
+  try {
+    // test-run 需要基准日,但列表始终显示当日结果;点击行跳详情同样带当日
+    const res = await api('/api/analysis/results' + (day ? '?day=' + day : ''));
+    curDay = day || resDataLatestDay;
+    render(res.data);
+    hint.textContent = curDay ? `${curDay} · 共 ${res.data.length} 个任务` : '暂无结果';
+  } catch (e) {
+    hint.textContent = '加载失败';
+    try { hint.textContent = JSON.parse(e.message).detail || hint.textContent; } catch (_) {}
+  } finally {
+    tip.style.display = 'none';
+  }
+}
+
+let resDataLatestDay = null;
+
+function render(results) {
+  resDataLatestDay = results.length ? results[0].trading_day : null;
+  if (!curDay && resDataLatestDay) curDay = resDataLatestDay;
+  const target = document.getElementById('cards');
+  if (!results.length) {
+    target.innerHTML = `<div class="muted">该交易日暂无分析结果(收盘后 16:15 自动生成)</div>`;
+    return;
+  }
+  target.innerHTML = results.map(renderCard).join('');
+  bindRows();
+  bindTestRun();
+}
+
+async function init() {
+  try {
+    const latest = await api('/api/analysis/latest');
+    if (latest && latest.day) {
+      curDay = latest.day;
+      document.getElementById('dayInput').value = latest.day;
+    }
+    const res = await api('/api/analysis/results' + (curDay ? '?day=' + curDay : ''));
+    render(res.data);
+    document.getElementById('dayHint').textContent =
+      curDay ? `${curDay} · 共 ${res.data.length} 个任务` : '暂无结果';
+  } catch (e) {
+    document.getElementById('dayHint').textContent = '加载失败';
+  }
+}
+
+init();
+</script>
+</body>
+</html>
