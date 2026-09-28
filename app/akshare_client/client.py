@@ -416,9 +416,9 @@ def _fetch_kline_eastmoney(symbol, period, adjust, start_date, end_date) -> list
 
 
 def _fetch_kline_sina(symbol, period, adjust, start_date, end_date) -> list[dict]:
-    """新浪日K。symbol 无前缀 -> 需要 sh/sz 前缀。不支持周/月K。"""
-    # 新浪接口需要带市场前缀
-    prefix = "sh" if symbol[0] in ("6", "9") else ("bj" if symbol[0] in ("4", "8") else "sz")
+    """新浪日K。symbol 无前缀 -> 需要 sh/sz/bj 前缀。不支持周/月K。"""
+    # 920xxx 为北交所号段,"9"从 sh 分支移到 bj 分支(本项目无 B 股 900xxx)
+    prefix = "sh" if symbol[0] == "6" else ("bj" if symbol[0] in ("4", "8", "9") else "sz")
     sina_symbol = f"{prefix}{symbol}"
     # 新浪只支持日K（adjust 参数: "" 或 "qfq" 或 "hfq"）
     kwargs: dict[str, Any] = {"symbol": sina_symbol, "adjust": adjust or ""}
@@ -449,8 +449,9 @@ def _fetch_kline_sina(symbol, period, adjust, start_date, end_date) -> list[dict
 
 
 def _fetch_kline_tencent(symbol, period, adjust, start_date, end_date) -> list[dict]:
-    """腾讯日K。symbol 无前缀 -> 需要 sh/sz 前缀。不支持复权/周/月K。"""
-    prefix = "sh" if symbol[0] in ("6", "9") else ("bj" if symbol[0] in ("4", "8") else "sz")
+    """腾讯日K。symbol 无前缀 -> 需要 sh/sz/bj 前缀。不支持复权/周/月K。"""
+    # 920xxx 为北交所号段,"9"从 sh 分支移到 bj 分支(本项目无 B 股 900xxx)
+    prefix = "sh" if symbol[0] == "6" else ("bj" if symbol[0] in ("4", "8", "9") else "sz")
     tx_symbol = f"{prefix}{symbol}"
     kwargs: dict[str, Any] = {"symbol": tx_symbol}
     if start_date:
