@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>market-lab 试跑历史</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
+         background: #f5f6f8; color: #1f2329; }
+  header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px;
+           display: flex; justify-content: space-between; align-items: center; }
+  header .nav { display: flex; align-items: center; gap: 18px; }
+  header .nav a { color: #cfd3d9; font-size: 14px; text-decoration: none; }
+  header .nav a:hover { color: #fff; }
+  header .logout { background: transparent; border: 1px solid #5a5f66; color: #cfd3d9;
+                   padding: 5px 12px; font-size: 13px; }
+  header .logout:hover { background: #2c3138; }
+  .wrap { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+  section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee;
+           vertical-align: top; }
+  th { color: #8a8f99; font-weight: 500; white-space: nowrap; }
+  button { background: #2f7cf6; color: #fff; border: 0; padding: 6px 14px;
+           border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #1f6ae0; }
+  button:disabled { background: #c9d2dd; cursor: not-allowed; }
+  .muted { color: #8a8f99; font-size: 12px; }
+  .err { color: #c62828; font-size: 12px; word-break: break-all; max-width: 280px; }
+  .filters { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .filters select { padding: 6px 10px; border: 1px solid #dcdfe6;
+                    border-radius: 6px; font-size: 13px; }
+  .status-badge { display: inline-block; padding: 2px 6px; border-radius: 3px;
+                  font-size: 12px; font-weight: 500; }
+  .status-success { background: #e8f5e9; color: #2e7d32; }
+  .status-failed { background: #ffebee; color: #c62828; }
+  .cols-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+               font-size: 12px; max-width: 220px; word-break: break-all; }
+  .sql-preview { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                 font-size: 12px; color: #5a5f66; max-width: 240px;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                 cursor: pointer; }
+  .sql-preview:hover { color: #2f7cf6; }
+  .pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; }
+  .pager .info { color: #8a8f99; }
+  dialog { padding: 0; border: 0; border-radius: 8px; max-width: 80vw; }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  dialog .modal-head { padding: 14px 18px; font-weight: 600; font-size: 15px;
+                       border-bottom: 1px solid #eee; }
+  dialog .modal-body { padding: 14px 18px; }
+  dialog textarea { width: 100%; min-width: 560px; min-height: 320px;
+                    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                    font-size: 12px; padding: 10px; border: 1px solid #dcdfe6;
+                    border-radius: 6px; resize: vertical; }
+  dialog .modal-foot { padding: 12px 18px; text-align: right;
+                       border-top: 1px solid #eee; }
+</style>
+</head>
+<body>
+<header><span>market-lab 试跑历史</span>
+  <div class="nav">
+    <a href="/dashboard">管理面板</a>
+    <a href="/kline">K线查询</a>
+    <a href="/analysis">分析选股</a>
+    <a href="/analysis/strategies">策略管理</a>
+    <a href="/analysis/run">策略执行</a>
+    <a href="/analysis/test-runs" style="color:#fff;font-weight:500">试跑历史</a>
+    <a href="/settings">运行设置</a>
+    <button class="logout" onclick="logout()">退出登录</button>
+  </div>
+</header>
+<div class="wrap">
+  <section>
+    <h2>试跑历史 <span class="muted" id="totalHint" style="font-weight:400"></span></h2>
+    <div class="filters">
+      <select id="filterTask"><option value="">全部策略</option></select>
+      <select id="filterStatus">
+        <option value="">全部状态</option>
+        <option value="SUCCESS">成功</option>
+        <option value="FAILED">失败</option>
+      </select>
+      <button onclick="loadLogs()">查询</button>
+      <span class="muted" id="loadingHint"></span>
+    </div>
+    <table>
+      <thead><tr>
+        <th>ID</th><th>策略</th><th>交易日</th><th>状态</th>
+        <th>行数</th><th>截断</th><th>返回列</th>
+        <th>错误原因</th><th>SQL预览</th><th>耗时</th><th>开始时间</th>
+      </tr></thead>
+      <tbody id="logBody">
+        <tr><td colspan="11" class="muted" style="text-align:center;padding:30px 0">加载中…</td></tr>
+      </tbody>
+    </table>
+    <div class="pager">
+      <button id="prevBtn" onclick="changePage(-1)">上一页</button>
+      <span class="info" id="pageInfo">-</span>
+      <button id="nextBtn" onclick="changePage(1)">下一页</button>
+    </div>
+  </section>
+</div>
+
+<dialog id="sqlDialog">
+  <div class="modal-head">SQL 预览(只读)</div>
+  <div class="modal-body"><textarea id="sqlFull" readonly></textarea></div>
+  <div class="modal-foot"><button onclick="closeSqlDialog()">关闭</button></div>
+</dialog>
+
+<script>
+function getToken() { return localStorage.getItem('token') || ''; }
+
+function gotoLogin() {
+  localStorage.removeItem('token');
+  location.replace('/login');
+}
+
+// 无 token 直接回登录页,避免空跑一圈请求
+if (!getToken()) gotoLogin();
+
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, {
+    'Authorization': 'Bearer ' + getToken(),
+  });
+  const r = await fetch(path, opts);
+  if (r.status === 401) { gotoLogin(); throw new Error('未授权'); }
+  // 滑动续期:服务端每次有效响应都回发新 token
+  const refreshed = r.headers.get('X-Refresh-Token');
+  if (refreshed) localStorage.setItem('token', refreshed);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function logout() { gotoLogin(); }
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+const STATUS_BADGE = {
+  SUCCESS: 'status-success',
+  FAILED: 'status-failed',
+};
+
+const PAGE_SIZE = 100;
+let curOffset = 0;
+let lastCount = 0;
+
+async function loadTaskOptions() {
+  const d = await api('/api/analysis/tasks');
+  const sel = document.getElementById('filterTask');
+  d.data.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = (t.is_active ? '' : '[停] ') + t.name;
+    sel.appendChild(opt);
+  });
+}
+
+async function loadLogs() {
+  const tid = document.getElementById('filterTask').value;
+  const st = document.getElementById('filterStatus').value;
+  document.getElementById('loadingHint').textContent = '加载中…';
+  document.getElementById('totalHint').textContent = '';
+  const params = new URLSearchParams({ limit: PAGE_SIZE, offset: curOffset });
+  if (tid) params.set('task_id', tid);
+  try {
+    const d = await api('/api/analysis/test-runs?' + params.toString());
+    // 客户端状态过滤——后端暂不传 status 参数,前端筛(避免加后端逻辑又得改路由)
+    const rows = st ? d.data.filter(r => r.status === st) : d.data;
+    lastCount = rows.length;
+    render(rows);
+    renderPager();
+    document.getElementById('totalHint').textContent =
+      `本页 ${rows.length} 条(offset ${curOffset})`;
+  } catch (e) {
+    document.getElementById('logBody').innerHTML =
+      `<tr><td colspan="11" class="err">加载失败: ${esc(e.message)}</td></tr>`;
+  } finally {
+    document.getElementById('loadingHint').textContent = '';
+  }
+}
+
+function renderRows(rows) {
+  if (!rows.length) {
+    return `<tr><td colspan="11" class="muted" style="text-align:center;padding:30px 0">无试跑记录(策略管理页编辑 SQL 后,在策略执行页点「执行」即留痕)</td></tr>`;
+  }
+  return rows.map(r => {
+    const badge = STATUS_BADGE[r.status] || '';
+    const cols = r.returned_columns;
+    let colsCell;
+    if (r.status === 'FAILED') {
+      colsCell = '<span class="muted">-</span>';
+    } else if (cols === '' || cols == null) {
+      // 空串=空结果, NULL=失败(上面已分流,这里只剩空结果)
+      colsCell = '<span class="muted">空结果</span>';
+    } else {
+      const full = esc(cols);
+      const short = esc(cols.length > 200 ? cols.slice(0, 200) + '…' : cols);
+      colsCell = `<div class="cols-cell" title="${full}">${short}</div>`;
+    }
+    const errCell = r.error_msg
+      ? `<div class="err" title="${esc(r.error_msg)}">${esc(r.error_msg.slice(0, 100))}${r.error_msg.length > 100 ? '…' : ''}</div>`
+      : '<span class="muted">-</span>';
+    const sqlShort = esc((r.sql_preview || '').slice(0, 200)) + (r.sql_preview && r.sql_preview.length > 200 ? '…' : '');
+    const sqlCell = `<div class="sql-preview" title="点击查看完整预览" onclick="showSql(${r.id})">${sqlShort || '<span class="muted">-</span>'}</div>`;
+    const trunc = r.truncated ? '是' : '否';
+    const dur = r.started_at && r.finished_at ? formatDuration(r.started_at, r.finished_at) : '-';
+    return `<tr>
+      <td>${r.id}</td>
+      <td>${esc(r.task_name) || '<span class="muted">已删除策略</span>'}</td>
+      <td>${r.trading_day ? esc(r.trading_day) : '<span class="muted">缺省</span>'}</td>
+      <td><span class="status-badge ${badge}">${esc(r.status)}</span></td>
+      <td>${r.row_count}</td>
+      <td>${trunc}</td>
+      <td>${colsCell}</td>
+      <td>${errCell}</td>
+      <td>${sqlCell}</td>
+      <td class="muted">${dur}</td>
+      <td class="muted">${formatTime(r.started_at)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function render(rows) {
+  document.getElementById('logBody').innerHTML = renderRows(rows);
+}
+
+function renderPager() {
+  document.getElementById('prevBtn').disabled = curOffset === 0;
+  // 没有 101 条判定——拿到的就是当前页全部,下一页只有可能空,先放开;翻到空再回退
+  document.getElementById('nextBtn').disabled = lastCount < PAGE_SIZE;
+  document.getElementById('pageInfo').textContent =
+    `offset ${curOffset} · 本页 ${lastCount} 条(每页 ${PAGE_SIZE})`;
+}
+
+function changePage(delta) {
+  const next = curOffset + delta * PAGE_SIZE;
+  if (next < 0) return;
+  curOffset = next;
+  loadLogs();
+}
+
+function formatTime(s) {
+  if (!s) return '-';
+  const dt = new Date(s);
+  if (isNaN(dt)) return s;
+  return dt.toLocaleString('zh-CN', {hour12: false});
+}
+
+function formatDuration(start, end) {
+  const a = new Date(start), b = new Date(end);
+  if (isNaN(a) || isNaN(b)) return '-';
+  const ms = b - a;
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  return Math.floor(ms / 60000) + 'm' + Math.floor((ms % 60000) / 1000) + 's';
+}
+
+// SQL 预览对话框
+const _sqlCache = {};
+async function showSql(logId) {
+  const dlg = document.getElementById('sqlDialog');
+  const ta = document.getElementById('sqlFull');
+  // 缓存——同一行可重复点开
+  if (_sqlCache[logId] != null) {
+    ta.value = _sqlCache[logId];
+    dlg.showModal();
+    return;
+  }
+  ta.value = '加载中…';
+  dlg.showModal();
+  try {
+    // 试跑历史列表已带 sql_preview,直接拿;无需新接口
+    const d = await api('/api/analysis/test-runs?limit=500');
+    const row = d.data.find(r => r.id === logId);
+    _sqlCache[logId] = row ? (row.sql_preview || '') : '(未找到)';
+    ta.value = _sqlCache[logId];
+  } catch (e) {
+    ta.value = '加载失败: ' + e.message;
+  }
+}
+
+function closeSqlDialog() {
+  document.getElementById('sqlDialog').close();
+}
+
+async function init() {
+  try {
+    await loadTaskOptions();
+    await loadLogs();
+  } catch (e) {
+    document.getElementById('logBody').innerHTML =
+      `<tr><td colspan="11" class="err">初始化失败: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+init();
+</script>
+</body>
+</html>

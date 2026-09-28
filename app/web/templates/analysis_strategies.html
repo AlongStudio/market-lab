@@ -63,7 +63,9 @@
     <a href="/dashboard">管理面板</a>
     <a href="/kline">K线查询</a>
     <a href="/analysis">分析选股</a>
+    <a href="/analysis/strategies" style="color:#fff;font-weight:500">策略管理</a>
     <a href="/analysis/run">策略执行</a>
+    <a href="/analysis/test-runs">试跑历史</a>
     <a href="/settings">运行设置</a>
     <button class="logout" onclick="logout()">退出登录</button>
   </div>
@@ -218,12 +220,34 @@ async function removeTask(task) {
   }
 }
 
+function formatRelativeTime(s) {
+  if (!s) return '';
+  const dt = new Date(s);
+  if (isNaN(dt)) return s;
+  const diff = Date.now() - dt.getTime();
+  if (diff < 60000) return '刚刚';
+  if (diff < 3600000) return Math.floor(diff / 60000) + ' 分钟前';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + ' 小时前';
+  if (diff < 2592000000) return Math.floor(diff / 86400000) + ' 天前';
+  return dt.toLocaleDateString('zh-CN');
+}
+
 function renderRow(t) {
   const lastHit = t.last_day
     ? `${esc(t.last_day)} ${t.last_status === 'SUCCESS' ? `命中 ${t.last_count ?? 0}` : esc(t.last_status || '')}`
     : '<span class="muted">无</span>';
   const lastErr = t.last_status === 'FAILED' && t.last_error
     ? `<div class="err" style="margin-top:4px">${esc(t.last_error)}</div>` : '';
+  // 最近试跑小标:成功绿、失败红、无 muted
+  let testBadge;
+  if (t.last_test_status === 'SUCCESS') {
+    testBadge = `<div style="margin-top:4px"><span style="color:#2e7d32">✓ 试跑 ${t.last_test_count ?? 0} 行</span> <span class="muted">${formatRelativeTime(t.last_test_at)}</span></div>`;
+  } else if (t.last_test_status === 'FAILED') {
+    const tip = (t.last_test_error || '').replace(/"/g, '&quot;');
+    testBadge = `<div style="margin-top:4px" title="${tip}"><span style="color:#c62828">✗ 试跑失败</span> <span class="muted">${formatRelativeTime(t.last_test_at)}</span></div>`;
+  } else {
+    testBadge = '<div class="muted" style="margin-top:4px">未试跑</div>';
+  }
   return `<tr data-id="${t.id}">
     <td>${t.id}</td>
     <td>
@@ -236,7 +260,7 @@ function renderRow(t) {
         <span class="slider"></span>
       </label>
     </td>
-    <td>${lastHit}${lastErr}</td>
+    <td>${lastHit}${lastErr}${testBadge}</td>
     <td class="muted">${esc(t.updated_at)}</td>
     <td>
       <div class="row-actions">

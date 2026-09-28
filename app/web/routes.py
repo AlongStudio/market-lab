@@ -41,6 +41,11 @@ def analysis_run_page(request: Request):
     return templates.TemplateResponse(request, "analysis_run.html", {})
 
 
+@router.get("/analysis/test-runs", response_class=HTMLResponse)
+def analysis_test_runs_page(request: Request):
+    return templates.TemplateResponse(request, "analysis_test_runs.html", {})
+
+
 @router.get("/stock/{code}", response_class=HTMLResponse)
 def stock_detail_page(request: Request, code: str):
     return templates.TemplateResponse(request, "stock_detail.html", {})

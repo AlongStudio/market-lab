@@ -32,7 +32,7 @@ _scheduler = None
 _PUBLIC_PATHS = {
     "/api/login", "/api/health", "/health",
     "/login", "/dashboard", "/settings", "/analysis",
-    "/analysis/strategies", "/analysis/run",
+    "/analysis/strategies", "/analysis/run", "/analysis/test-runs",
     "/stock", "/kline", "/static",
     "/docs", "/openapi.json", "/redoc", "/favicon.ico",
 }

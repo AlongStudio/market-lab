@@ -605,3 +605,14 @@ def analysis_latest(db: Session = Depends(get_session)):
     if day is None:
         return {"day": None, "data": []}
     return {"day": str(day), "data": analysis_service.get_results(db, day=day)}
+
+
+@router.get("/analysis/test-runs")
+def list_test_runs_api(
+    task_id: Optional[int] = Query(None, description="按策略筛选"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_session),
+):
+    """试跑历史(test-run 持久化日志),按 started_at 倒序。"""
+    return {"data": analysis_service.list_test_runs(db, task_id, limit, offset)}

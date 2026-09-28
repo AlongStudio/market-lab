@@ -83,16 +83,22 @@ def _query_rows(db: Session, sql: str, trading_day, limit: int) -> tuple[list[di
 # ── 任务 CRUD ─────────────────────────────────────────────────────
 
 def list_tasks(db: Session) -> list[dict]:
-    """任务列表,附最近一次结果摘要(状态/命中数/最近交易日)。"""
+    """任务列表,附最近一次结果摘要(状态/命中数/最近交易日)与最近一次试跑摘要。"""
     rows = db.execute(text(
         "SELECT t.id, t.name, t.description, t.is_active, t.schedule_type, "
         "       t.result_sql, t.updated_at, "
         "       r.trading_day AS last_day, r.status AS last_status, "
-        "       r.matched_count AS last_count, r.error_msg AS last_error "
+        "       r.matched_count AS last_count, r.error_msg AS last_error, "
+        "       tl.id AS last_test_id, tl.status AS last_test_status, "
+        "       tl.row_count AS last_test_count, tl.returned_columns AS last_test_cols, "
+        "       tl.started_at AS last_test_at, tl.error_msg AS last_test_error "
         "FROM analysis_task t "
         "LEFT JOIN analysis_result r ON r.id = ("
         "  SELECT id FROM analysis_result WHERE task_id = t.id "
         "  ORDER BY trading_day DESC LIMIT 1) "
+        "LEFT JOIN analysis_test_run_log tl ON tl.id = ("
+        "  SELECT id FROM analysis_test_run_log WHERE task_id = t.id "
+        "  ORDER BY started_at DESC LIMIT 1) "
         "ORDER BY t.id"
     )).mappings().all()
     return [dict(r) for r in rows]
@@ -145,18 +151,74 @@ def delete_task(db: Session, task_id: int) -> int:
 
 # ── 执行引擎 ─────────────────────────────────────────────────────
 
+def _insert_test_run_log(db: Session, task_id: int, trading_day, limit: int,
+                         sql_preview: str) -> int | None:
+    """试跑开始前先落一条 PENDING-ish 日志(started_at=NOW()),返回 log_id。
+
+    独立小事务,失败 warn 不阻断——日志是副产物,不能让 test_run 整个挂。
+    """
+    try:
+        result = db.execute(text(
+            "INSERT INTO analysis_test_run_log "
+            "(task_id, trading_day, limit_used, status, sql_preview, "
+            " started_at, finished_at) VALUES "
+            "(:tid, :day, :lim, 'RUNNING', :sql, NOW(), NOW())"
+        ), {"tid": task_id, "day": trading_day, "lim": int(limit),
+            "sql": sql_preview})
+        db.commit()
+        return result.lastrowid
+    except Exception as e:  # noqa: BLE001 日志写失败不阻断主流程
+        db.rollback()
+        logger.warning("test_run_log 写入失败(任务 %s): %s", task_id, e)
+        return None
+
+
+def _finish_test_run_log(db: Session, log_id: int | None, status: str,
+                         row_count: int, truncated: bool,
+                         returned_columns: str | None, error_msg: str | None) -> None:
+    """试跑结束 UPDATE 日志行。独立小事务,失败 warn 不阻断。"""
+    if log_id is None:
+        return
+    try:
+        db.execute(text(
+            "UPDATE analysis_test_run_log SET status=:st, row_count=:cnt, "
+            "truncated=:tr, returned_columns=:cols, error_msg=:err, "
+            "finished_at=NOW() WHERE id=:id"
+        ), {"st": status, "cnt": int(row_count), "tr": 1 if truncated else 0,
+            "cols": returned_columns, "err": error_msg, "id": log_id})
+        db.commit()
+    except Exception as e:  # noqa: BLE001 日志写失败不阻断主流程
+        db.rollback()
+        logger.warning("test_run_log 收尾失败(log %s): %s", log_id, e)
+
+
 def test_run(db: Session, task_id: int, trading_day=None, limit: int = 50) -> dict:
-    """试跑任务 SQL(不落快照),返回命中列表。调 SQL 用,limit 硬顶 TEST_RUN_ROWS。"""
+    """试跑任务 SQL(不落快照),返回命中列表。调 SQL 用,limit 硬顶 TEST_RUN_ROWS。
+
+    每次试跑都写 analysis_test_run_log,留痕入参/状态/返回列名/错误/SQL 预览,
+    便于线上诊断 NAS 环境"缺 stock_code 列"之类报错根因。
+    """
     task = get_task(db, task_id)
     if not task:
         raise ValueError(f"任务不存在: {task_id}")
-    if trading_day is None:
-        trading_day = latest_trading_day(db)
+    sql_preview = (task["result_sql"] or "")[:500]
+    log_id = _insert_test_run_log(db, task_id, trading_day, limit, sql_preview)
+    try:
         if trading_day is None:
-            raise ValueError("daily_kline 无数据,无法确定分析基准日")
-    n = min(limit, TEST_RUN_ROWS)
-    rows, truncated = _query_rows(db, task["result_sql"], trading_day, n)
-    return {"trading_day": str(trading_day), "truncated": truncated, "rows": rows}
+            trading_day = latest_trading_day(db)
+            if trading_day is None:
+                raise ValueError("daily_kline 无数据,无法确定分析基准日")
+        n = min(limit, TEST_RUN_ROWS)
+        rows, truncated = _query_rows(db, task["result_sql"], trading_day, n)
+        # rows[0].keys() 保序——与 SQL SELECT 列序一致;空结果写空串区别于失败 NULL
+        cols = ",".join(rows[0].keys()) if rows else ""
+        _finish_test_run_log(db, log_id, "SUCCESS", len(rows), truncated, cols, None)
+        return {"trading_day": str(trading_day), "truncated": truncated,
+                "matched_count": len(rows), "rows": rows, "_log_id": log_id}
+    except Exception as e:
+        msg = str(e)[:2000]
+        _finish_test_run_log(db, log_id, "FAILED", 0, False, None, msg)
+        raise
 
 
 def execute_analysis(db: Session, result_id: int, timeout_sec: int = 300) -> None:
@@ -243,3 +305,29 @@ def get_results(db: Session, day=None, task_id: int | None = None) -> list[dict]
 def latest_result_day(db: Session):
     """最近一个有结果快照的交易日(/api/analysis/latest 落地页用)。"""
     return db.execute(text("SELECT MAX(trading_day) FROM analysis_result")).scalar()
+
+
+# ── 试跑日志查询 ─────────────────────────────────────────────────
+
+def list_test_runs(db: Session, task_id: int | None = None,
+                   limit: int = 100, offset: int = 0) -> list[dict]:
+    """试跑历史,按 started_at 倒序。附任务名(任务已删则 NULL,前端显示"已删除策略")。"""
+    conds, params = [], {}
+    if task_id is not None:
+        conds.append("l.task_id=:tid")
+        params["tid"] = task_id
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    rows = db.execute(text(
+        f"SELECT l.id, l.task_id, l.trading_day, l.limit_used, l.row_count, "
+        f"       l.truncated, l.status, l.returned_columns, l.error_msg, "
+        f"       l.sql_preview, l.started_at, l.finished_at, t.name AS task_name "
+        f"FROM analysis_test_run_log l "
+        f"LEFT JOIN analysis_task t ON t.id = l.task_id "
+        f"{where} ORDER BY l.started_at DESC LIMIT :lim OFFSET :off"
+    ), {**params, "lim": int(limit), "off": int(offset)}).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def get_latest_test_run_for_task(db: Session, task_id: int) -> dict | None:
+    rows = list_test_runs(db, task_id, limit=1, offset=0)
+    return rows[0] if rows else None
