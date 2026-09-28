@@ -403,7 +403,11 @@ def _effective(key: str, raw: str) -> float:
 
 @router.get("/config")
 def get_runtime_config(db: Session = Depends(get_session)):
-    """读全部运行时配置。effective 为经护栏 clamp 后的当前生效值。"""
+    """读全部运行时配置。effective 为经护栏 clamp 后的当前生效值。
+
+    bool 键(如 intraday_mix_daily)effective 回显 'true'/'false' 字符串,
+    数值键 effective 为经护栏 clamp 后的数字。
+    """
     rows = db.execute(
         text("SELECT config_key, config_value, description, updated_at, updated_by "
              "FROM runtime_config ORDER BY config_key")
@@ -424,6 +428,9 @@ def get_runtime_config(db: Session = Depends(get_session)):
                     "min": runtime_config.CONFIG_RANGES[r["config_key"]][0],
                     "max": runtime_config.CONFIG_RANGES[r["config_key"]][1],
                 } if r["config_key"] in runtime_config.CONFIG_RANGES else {}),
+                **({
+                    "type": "bool",
+                } if r["config_key"] in runtime_config.CONFIG_BOOL_KEYS else {}),
             }
             for r in rows
         ]
@@ -437,12 +444,23 @@ def set_runtime_config(
 ):
     """改运行时配置 {key: value, ...},立即生效(≤1 tick)。
 
-    护栏校验:越界值整体 400,不部分落库。updated_by 从 token 解出审计。
+    护栏校验:数值键越界整体 400,bool 键只接受 true/false,
+    不部分落库。updated_by 从 token 解出审计。
     """
     if not payload:
         raise HTTPException(400, "请求体不能为空")
     parsed: dict[str, str] = {}
     for key, value in payload.items():
+        if key in runtime_config.CONFIG_BOOL_KEYS:
+            if isinstance(value, bool):
+                parsed[key] = "true" if value else "false"
+            elif isinstance(value, str) and value.strip().lower() in ("true", "false"):
+                parsed[key] = value.strip().lower()
+            else:
+                raise HTTPException(
+                    400, f"{key} 须为 true/false,收到: {value!r}"
+                )
+            continue
         if key not in runtime_config.CONFIG_RANGES:
             raise HTTPException(400, f"未知配置项: {key}")
         try:

@@ -49,8 +49,10 @@ def _tick() -> None:
     try:
         today = date.today()
         trading = meta_service.is_trading_day(db, today)
-        data_types, n = get_policy(datetime.now(), trading)
-        tasks = task_runner.claim_tasks(db, limit=n, data_types=data_types)
+        data_types, n, prefer_minute = get_policy(datetime.now(), trading)
+        tasks = task_runner.claim_tasks(
+            db, limit=n, data_types=data_types, prefer_minute=prefer_minute
+        )
     finally:
         db.close()
     if not tasks:

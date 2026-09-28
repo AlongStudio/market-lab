@@ -23,13 +23,14 @@ logger = logging.getLogger(__name__)
 _CACHE_TTL = 5.0          # 秒:缓存有效期
 _DB_FAIL_COOLDOWN = 5.0   # 秒:DB 查询失败后的熔断窗,窗内不再打 DB
 
-# 硬编码默认:与 V5 迁移种子一致(DB 无值且 env 未配时的最后兜底)
+# 硬编码默认:与 V5/V7 迁移种子一致(DB 无值且 env 未配时的最后兜底)
 _HARD_DEFAULTS = {
     "akshare_qps": "5",
     "offhour_workers": "32",
     "intraday_workers": "4",
     "tick_interval_sec": "10",
     "analysis_timeout_sec": "300",
+    "intraday_mix_daily": "false",
 }
 
 # env 快照:模块加载时读一次(进程生命周期内不变)。
@@ -46,6 +47,10 @@ CONFIG_RANGES = {
     "tick_interval_sec": (5.0, 60.0),
     "analysis_timeout_sec": (30.0, 3600.0),
 }
+
+# bool 型配置键:不在 CONFIG_RANGES(无数值护栏),走专门的 get_bool / POST 校验。
+# API 层 set 时只接受 'true'/'false' 字符串(或归一化的 true/false JSON 值)。
+CONFIG_BOOL_KEYS = {"intraday_mix_daily"}
 
 _lock = threading.Lock()
 _cache: dict[str, str] = {}   # key -> value(原始字符串)
@@ -118,6 +123,21 @@ def get_float(key: str, default: float) -> float:
 
 def get_int(key: str, default: int) -> int:
     return int(get_float(key, float(default)))
+
+
+def get_bool(key: str, default: bool) -> bool:
+    """读 bool 配置:接受 'true'/'false' 字符串(大小写不敏感),其他值回退默认。
+
+    runtime_config 表是 KV 文本表,bool 存 'true'/'false' 字符串。
+    不写 True/False 布尔是因为 MySQL 驱动写入时会转成 '1'/'0',可读性差且
+    与 V7 种子 'false' 字面值不一致——保持字符串真值避免歧义。
+    """
+    raw = get(key, "true" if default else "false").strip().lower()
+    if raw == "true":
+        return True
+    if raw == "false":
+        return False
+    return default
 
 
 def refresh() -> None:

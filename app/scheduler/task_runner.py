@@ -24,19 +24,33 @@ def _symbol_of(stock_code: str) -> str:
     return stock_code[2:] if stock_code[:2] in ("SH", "SZ", "BJ") else stock_code
 
 
-def claim_tasks(db: Session, limit: int, data_types: tuple[str, ...]) -> list[dict]:
+def claim_tasks(
+    db: Session,
+    limit: int,
+    data_types: tuple[str, ...],
+    prefer_minute: bool = False,
+) -> list[dict]:
     """原子领取一批 PENDING 任务,置 RUNNING + locked_at。返回领到的任务。
 
     data_types: 本时段允许跑的 data_type(严格隔离,见 concurrency.get_policy)。
+    prefer_minute: True 时 SQL ORDER BY (data_type='minute') DESC, id,保证
+        分钟K在日K积压场景下不被饿死(分钟K id 通常更大,纯 id 排序会被旧
+        日K占满 limit)。False 时 SQL 退回 ORDER BY id,与 T4 之前逐字节等价。
     用 SELECT ... FOR UPDATE SKIP LOCKED 选 id,再批量 UPDATE,避免多 worker 抢同一行。
     """
     if limit <= 0 or not data_types:
         return []
+    order_by = (
+        "ORDER BY (data_type = 'minute') DESC, id LIMIT :n"
+        if prefer_minute
+        else "ORDER BY id LIMIT :n"
+    )
     rows = db.execute(
         text(
             "SELECT id FROM fetch_task WHERE status='PENDING' "
             "AND data_type IN :types "
-            "ORDER BY id LIMIT :n FOR UPDATE SKIP LOCKED"
+            + order_by
+            + " FOR UPDATE SKIP LOCKED"
         ).bindparams(bindparam("types", expanding=True)),
         {"types": list(data_types), "n": limit},
     ).all()
