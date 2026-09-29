@@ -216,6 +216,18 @@ class _SourceBreaker:
             self._failures = 0
             self._skip_until = 0.0
 
+    def force_open(self, reason: str) -> None:
+        """外部判定强制隔离 5 分钟(如空返回窗口告警,T6 §7.2)。
+
+        空返回发生在调用成功记账之后,复用 on_failure 会被下一次调用
+        成功的 on_success 清零,连续计数永远到不了阈值;软限流返回空
+        DataFrame 不抛异常,必须由窗口计数独立判定后直接隔离。
+        """
+        with self._lock:
+            self._failures = self._threshold
+            self._skip_until = time.monotonic() + 300
+        logger.warning("数据源 %s 被强制隔离 5 分钟: %s", self.name, reason)
+
     def snapshot(self) -> dict:
         """只读快照(供 /api/metrics/sources 用),不持锁做副本。"""
         with self._lock:
@@ -237,6 +249,77 @@ _source_breakers: dict[str, _SourceBreaker] = {
     name: _SourceBreaker(name, settings.DATA_SOURCE_FAIL_THRESHOLD)
     for name in ("eastmoney", "sina", "sina_raw", "tencent")
 }
+
+# ── 源级空返回窗口计数(T6 §7.2 防软限流)──────────────────────────
+# 背景:新浪软限流返回空 DataFrame 不抛异常,命中真空语义(合法 SUCCESS)
+# 静默零写入;sina_raw 与 akshare sina 同端点,双保险一起哑时只有这个
+# 计数能发现(9/29 假空复发实锤)。
+# 判定:5 分钟窗内空返回 >100 次且占比 >90% → CRIT 日志 + force_open
+# 隔离(走既有熔断路径,fallback 切下一源)。新股/退市真空零星(<5% 占比)
+# 不会误触发;全量软限流 20s 内即可攒满 100 次(QPS=5)。
+_EMPTY_WINDOW_SEC = 300
+_EMPTY_COUNT_THRESHOLD = 100
+_EMPTY_RATIO_THRESHOLD = 0.9
+
+
+class _EmptyWindowCounter:
+    """单源空返回计数窗(固定 5 分钟窗,过期整体重置)。
+
+    不做真滑动窗口:判定粒度是"整窗统计",固定窗足够且无队列开销。
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._lock = threading.Lock()
+        self._window_start = 0.0
+        self.empty = 0
+        self.total = 0
+        self._alerted = False
+
+    def record(self, is_empty: bool) -> None:
+        """记一笔调用结果;窗口过期先重置。达阈触发一次告警+隔离(防刷屏)。"""
+        now = time.monotonic()
+        hit = False
+        with self._lock:
+            if now - self._window_start >= _EMPTY_WINDOW_SEC:
+                self._window_start = now
+                self.empty = 0
+                self.total = 0
+                self._alerted = False
+            self.total += 1
+            if is_empty:
+                self.empty += 1
+            if (
+                not self._alerted
+                and self.empty > _EMPTY_COUNT_THRESHOLD
+                and self.empty / self.total > _EMPTY_RATIO_THRESHOLD
+            ):
+                self._alerted = True
+                hit = True
+                empty, total = self.empty, self.total
+        if hit:
+            logger.critical(
+                "[假空告警] 源 %s %d 秒窗内空返回 %d/%d 次(占比 %.0f%%),"
+                "疑似软限流/静默失败,强制隔离 5 分钟",
+                self.name, _EMPTY_WINDOW_SEC, empty, total,
+                100.0 * empty / total,
+            )
+            _source_breakers[self.name].force_open("空返回窗口达阈")
+
+
+_empty_counters: dict[str, _EmptyWindowCounter] = {
+    name: _EmptyWindowCounter(name) for name in
+    ("eastmoney", "sina", "sina_raw", "tencent")
+}
+
+
+def _record_empty(source: Optional[str], is_empty: bool) -> None:
+    """源级空返回记账:非空也计分母,占比才有意义。无源调用(列表等)不计。"""
+    if not source:
+        return
+    ctr = _empty_counters.get(source)
+    if ctr:
+        ctr.record(is_empty)
 
 # 各 data_type 实际支持的 fetcher 源集合(与 fetch_kline/fetch_minute 内部 dict 一致)。
 # 启动自检(C3)用它跟 DATA_SOURCE_ORDER 求交集,产出"有效源"列表,避免在
@@ -329,9 +412,12 @@ def _fetch_with_fallback(
             rows = _call_with_timeout(fetcher, source=source)
             if rows:
                 logger.debug("数据源 %s 成功获取 %s: %d 行", source, data_desc, len(rows))
+                _record_empty(source, is_empty=False)
                 return rows
-            # 空结果也算成功（可能是新股还没数据）——真空语义,见 §1.2
+            # 空结果也算成功（可能是新股还没数据）——真空语义,见 §1.2。
+            # 但持续大规模空 = 软限流嫌疑,记入窗口计数(T6 §7.2)
             logger.debug("数据源 %s 返回空 %s", source, data_desc)
+            _record_empty(source, is_empty=True)
             return rows
         except Exception as e:
             last_error = e

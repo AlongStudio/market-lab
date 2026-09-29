@@ -4,6 +4,7 @@
 UPSERT 到唯一一张表,无跨表写入。
 """
 import logging
+from datetime import date, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -23,7 +24,22 @@ def upsert_minute(db: Session, stock_code: str, symbol: str) -> int:
     # db.execute 之前完成,禁止把外呼塞进事务(docs/plans/T3 §1.2C)。
     rows = client.fetch_minute(symbol)
     if not rows:
-        logger.warning("ZERO_WRITE minute %s symbol=%s", stock_code, symbol)
+        # 假空防护(T6 §7.2):活跃股(daily 近10日有数据)的分钟K(窗口近5日)
+        # 不可能真空——空返回 = 源静默失败(如新浪软限流返回空 DataFrame 不抛
+        # 异常),抛错走 FAILED 留痕;真 vacuum(新股/退市/长期停牌)仍合法
+        # SUCCESS,只打 ZERO_WRITE。代价:仅空返回路径多一次索引点查。
+        recent = db.execute(
+            text(
+                "SELECT 1 FROM daily_kline WHERE stock_code=:c "
+                "AND trading_date >= :d LIMIT 1"
+            ),
+            {"c": stock_code, "d": date.today() - timedelta(days=10)},
+        ).first()
+        if recent:
+            raise RuntimeError(
+                f"活跃股分钟K空返回(疑似源静默失败): {stock_code}")
+        logger.warning("ZERO_WRITE minute %s symbol=%s (真空,新股/退市)",
+                       stock_code, symbol)
         return 0
 
     table = minute_table_of(stock_code)
