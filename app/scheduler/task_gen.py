@@ -1,10 +1,19 @@
-"""fetch_task 任务生成:初始化全量回填 + 每日增量。"""
+"""fetch_task 任务生成:初始化全量回填 + 每日增量。
+
+分批提交(~1000 条/批独立 commit):避免单次 executemany 太长被容器重启/超时
+中断时全部回滚(2026-09-28 16:10 生成 16,743 条任务时插到 853 条中断,
+疑与 15:50 部署的容器重启相关)。IODKU 天然幂等,中断后下一轮重跑自动补齐
+缺的股票,不产生重复任务。
+"""
+import logging
 from datetime import date, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # 回填覆盖的 (data_type, adjust) 组合
 _BACKFILL_COMBOS = [
@@ -20,6 +29,11 @@ _INSERT = text(
     "VALUES (:stock_code, :data_type, :adjust, :date_start, :date_end, 'PENDING') "
     "ON DUPLICATE KEY UPDATE updated_at=NOW()"
 )
+
+# 分批提交的批次大小:与 upsert 的 CHUNK=30 同思路(短事务减死锁),但任务
+# 生成是单表 INSERT 无并发,批次可以更大;~1000 条/批平衡 commit 次数与
+# 单事务时长。中途失败已提交批次保留,重跑幂等。
+_GEN_CHUNK = 1000
 
 
 def _active_stocks(db: Session) -> list[str]:
@@ -57,6 +71,21 @@ def _date_chunks(start: date, end: date, chunk_years: int) -> list[tuple[date, d
     return chunks
 
 
+def _chunked_insert(db: Session, params: list[dict]) -> int:
+    """分批 executemany + commit,返回总条数。
+
+    每批 _GEN_CHUNK 条独立 commit,中途失败时已提交批次保留。IODKU 幂等,
+    重跑自动补齐缺失任务,不产生重复。
+    """
+    total = 0
+    for i in range(0, len(params), _GEN_CHUNK):
+        batch = params[i:i + _GEN_CHUNK]
+        db.execute(_INSERT, batch)
+        db.commit()
+        total += len(batch)
+    return total
+
+
 def generate_backfill(db: Session) -> int:
     """为全 A 股 × {日K三口径/周K/月K} 生成回填任务,按 BACKFILL_CHUNK_YEARS 年分片。
 
@@ -75,9 +104,7 @@ def generate_backfill(db: Session) -> int:
                     "stock_code": code, "data_type": dt, "adjust": adj,
                     "date_start": seg_start, "date_end": seg_end,
                 })
-    db.execute(_INSERT, params)
-    db.commit()
-    return len(params)
+    return _chunked_insert(db, params)
 
 
 def generate_daily_incremental(db: Session, days_back: int = 7) -> int:
@@ -94,9 +121,7 @@ def generate_daily_incremental(db: Session, days_back: int = 7) -> int:
                 "stock_code": code, "data_type": "daily", "adjust": adj,
                 "date_start": start, "date_end": end,
             })
-    db.execute(_INSERT, params)
-    db.commit()
-    return len(params)
+    return _chunked_insert(db, params)
 
 
 def generate_minute_daily(db: Session) -> int:
@@ -112,6 +137,4 @@ def generate_minute_daily(db: Session) -> int:
         "stock_code": code, "data_type": "minute", "adjust": "",
         "date_start": today, "date_end": today,
     } for code in stocks]
-    db.execute(_INSERT, params)
-    db.commit()
-    return len(params)
+    return _chunked_insert(db, params)
