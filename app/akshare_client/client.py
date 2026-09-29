@@ -238,6 +238,17 @@ _source_breakers: dict[str, _SourceBreaker] = {
     for name in ("eastmoney", "sina", "sina_raw", "tencent")
 }
 
+# 各 data_type 实际支持的 fetcher 源集合(与 fetch_kline/fetch_minute 内部 dict 一致)。
+# 启动自检(C3)用它跟 DATA_SOURCE_ORDER 求交集,产出"有效源"列表,避免在
+# 启动路径真实调用 fetch_* 触发外呼。adjust_factor 虽在 DAILY_TYPES 里但
+# task_gen 不生成该类型任务,且无独立 fetcher,故不列入。
+_FETCHERS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "minute": ("eastmoney", "sina", "sina_raw"),
+    "daily": ("eastmoney", "sina", "tencent"),
+    "weekly": ("eastmoney",),
+    "monthly": ("eastmoney",),
+}
+
 
 def _record_success(source: Optional[str] = None) -> None:
     """外呼成功记账:先单源后全局。"""
