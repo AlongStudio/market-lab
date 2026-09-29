@@ -31,6 +31,7 @@ import pandas as pd
 
 from app.config import settings
 from app.akshare_client import columns as C
+from app.akshare_client import sina_raw
 from app.services import runtime_config
 
 logger = logging.getLogger(__name__)
@@ -215,11 +216,26 @@ class _SourceBreaker:
             self._failures = 0
             self._skip_until = 0.0
 
+    def snapshot(self) -> dict:
+        """只读快照(供 /api/metrics/sources 用),不持锁做副本。"""
+        with self._lock:
+            failures = self._failures
+            skip_until = self._skip_until
+        available = failures < self._threshold
+        remaining_sec = max(0.0, skip_until - time.monotonic()) if skip_until else 0.0
+        return {
+            "name": self.name,
+            "available": available,
+            "failures": failures,
+            "threshold": self._threshold,
+            "remaining_cooldown_sec": round(remaining_sec, 0) if not available else 0,
+        }
+
 
 # 各数据源的熔断器实例
 _source_breakers: dict[str, _SourceBreaker] = {
     name: _SourceBreaker(name, settings.DATA_SOURCE_FAIL_THRESHOLD)
-    for name in ("eastmoney", "sina", "tencent")
+    for name in ("eastmoney", "sina", "sina_raw", "tencent")
 }
 
 
@@ -288,11 +304,13 @@ def _fetch_with_fallback(
     """
     order = [s for s in settings.DATA_SOURCE_ORDER if s in fetchers]
     last_error = None
+    attempted_any = False
     for source in order:
         breaker = _source_breakers.get(source)
         if breaker and not breaker.is_available:
             logger.debug("跳过数据源 %s（被熔断）", source)
             continue
+        attempted_any = True
         fetcher = fetchers[source]
         try:
             # 单源成功/失败记账已统一收进 _call_with_timeout
@@ -301,16 +319,22 @@ def _fetch_with_fallback(
             if rows:
                 logger.debug("数据源 %s 成功获取 %s: %d 行", source, data_desc, len(rows))
                 return rows
-            # 空结果也算成功（可能是新股还没数据）
+            # 空结果也算成功（可能是新股还没数据）——真空语义,见 §1.2
             logger.debug("数据源 %s 返回空 %s", source, data_desc)
             return rows
         except Exception as e:
             last_error = e
             logger.warning("数据源 %s 获取 %s 失败: %s", source, data_desc, e)
             continue
-    # 所有源都失败
+    # 有源真实调用过且全失败 → 抛最后一个异常(走 FAILED 重试路径)
     if last_error:
         raise last_error
+    # 候选源都被熔断跳过 / 无候选 → 假成功根因修复:必须 FAILED,不允许静默 return []
+    if not attempted_any:
+        raise RuntimeError(
+            f"无可用数据源(候选={order} 全部熔断或未配置): {data_desc}"
+        )
+    # 有源真实调用过且返回空 → 真空(合法 SUCCESS)
     return []
 
 
@@ -417,9 +441,7 @@ def _fetch_kline_eastmoney(symbol, period, adjust, start_date, end_date) -> list
 
 def _fetch_kline_sina(symbol, period, adjust, start_date, end_date) -> list[dict]:
     """新浪日K。symbol 无前缀 -> 需要 sh/sz/bj 前缀。不支持周/月K。"""
-    # 920xxx 为北交所号段,"9"从 sh 分支移到 bj 分支(本项目无 B 股 900xxx)
-    prefix = "sh" if symbol[0] == "6" else ("bj" if symbol[0] in ("4", "8", "9") else "sz")
-    sina_symbol = f"{prefix}{symbol}"
+    sina_symbol = _with_prefix(symbol)
     # 新浪只支持日K（adjust 参数: "" 或 "qfq" 或 "hfq"）
     kwargs: dict[str, Any] = {"symbol": sina_symbol, "adjust": adjust or ""}
     if start_date:
@@ -450,9 +472,7 @@ def _fetch_kline_sina(symbol, period, adjust, start_date, end_date) -> list[dict
 
 def _fetch_kline_tencent(symbol, period, adjust, start_date, end_date) -> list[dict]:
     """腾讯日K。symbol 无前缀 -> 需要 sh/sz/bj 前缀。不支持复权/周/月K。"""
-    # 920xxx 为北交所号段,"9"从 sh 分支移到 bj 分支(本项目无 B 股 900xxx)
-    prefix = "sh" if symbol[0] == "6" else ("bj" if symbol[0] in ("4", "8", "9") else "sz")
-    tx_symbol = f"{prefix}{symbol}"
+    tx_symbol = _with_prefix(symbol)
     kwargs: dict[str, Any] = {"symbol": tx_symbol}
     if start_date:
         kwargs["start_date"] = start_date.strftime("%Y%m%d")
@@ -533,10 +553,19 @@ def _fetch_minute_eastmoney(symbol) -> list[dict]:
     return out
 
 
+def _with_prefix(symbol: str) -> str:
+    """无前缀代码 -> 带 sh/sz/bj 前缀(akshare/裸接口均用此规则)。
+
+    920xxx 为北交所号段,"9"从 sh 分支移到 bj 分支(本项目无 B 股 900xxx)。
+    复用 _fetch_minute_sina/_fetch_kline_sina 修好的路由规则,集中一处。
+    """
+    prefix = "sh" if symbol[0] == "6" else ("bj" if symbol[0] in ("4", "8", "9") else "sz")
+    return f"{prefix}{symbol}"
+
+
 def _fetch_minute_sina(symbol) -> list[dict]:
     """新浪分钟K。symbol 无前缀 -> 需要 sh/sz 前缀。"""
-    prefix = "sh" if symbol[0] in ("6", "9") else ("bj" if symbol[0] in ("4", "8") else "sz")
-    sina_symbol = f"{prefix}{symbol}"
+    sina_symbol = _with_prefix(symbol)
     df = ak.stock_zh_a_minute(symbol=sina_symbol, period="1v")
     if df is None or df.empty:
         return []
@@ -574,10 +603,12 @@ def fetch_minute(symbol: str) -> list[dict]:
     数据源能力:
       eastmoney: 支持分钟K
       sina:      支持分钟K（列名不同，需拼接 day+time）
+      sina_raw:  新浪裸接口(独立于 akshare 的 pandas 链路,规避解析 bug)
       tencent:   不支持分钟K
     """
     fetchers: dict[str, Callable] = {
         "eastmoney": lambda: _fetch_minute_eastmoney(symbol),
         "sina": lambda: _fetch_minute_sina(symbol),
+        "sina_raw": lambda: sina_raw.fetch_minute_sina_raw(_with_prefix(symbol)),
     }
     return _fetch_with_fallback(fetchers, f"分钟K {symbol}")

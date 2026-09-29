@@ -101,11 +101,25 @@ _MINUTE_SINA = {
     "amount": "amount",
 }
 
+# sina_raw: 新浪裸接口 CN_MarketDataService.getKLineData(不走 akshare 的 pandas 链路)
+#   返回 JSON 数组,键: day(完整时间戳 "2026-09-29 14:41:00")/open/high/low/close/volume/amount
+#   数值为字符串,client 层 float() 转换。与 sina 同键但 day 字段为完整时间戳,无需拼接。
+_MINUTE_SINA_RAW = {
+    "minute_time": "day",
+    "open": "open",
+    "close": "close",
+    "high": "high",
+    "low": "low",
+    "volume": "volume",
+    "amount": "amount",
+}
+
 # tencent: 暂无分钟K接口
 _MINUTE_TX = None
 
 MINUTE_COLUMNS = {
     "eastmoney": _MINUTE_EM,
     "sina": _MINUTE_SINA,
+    "sina_raw": _MINUTE_SINA_RAW,   # 裸接口,文档化用
     "tencent": _MINUTE_TX,   # None = 该数据源不支持此数据类型
 }

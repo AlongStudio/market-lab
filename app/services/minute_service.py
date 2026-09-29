@@ -3,11 +3,15 @@
 按 stock_code 哈希路由到 minute_kline_NN 分表(见 app/db/minute_shard.py),
 UPSERT 到唯一一张表,无跨表写入。
 """
+import logging
+
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.akshare_client import client
 from app.db.minute_shard import minute_table_of
+
+logger = logging.getLogger(__name__)
 
 
 def upsert_minute(db: Session, stock_code: str, symbol: str) -> int:
@@ -19,6 +23,7 @@ def upsert_minute(db: Session, stock_code: str, symbol: str) -> int:
     # db.execute 之前完成,禁止把外呼塞进事务(docs/plans/T3 §1.2C)。
     rows = client.fetch_minute(symbol)
     if not rows:
+        logger.warning("ZERO_WRITE minute %s symbol=%s", stock_code, symbol)
         return 0
 
     table = minute_table_of(stock_code)
@@ -49,6 +54,8 @@ def upsert_minute(db: Session, stock_code: str, symbol: str) -> int:
             "amount": r.get("amount"),
         })
     if not params:
+        logger.warning("ZERO_WRITE minute %s symbol=%s rows=%d but all filtered",
+                       stock_code, symbol, len(rows))
         return 0
     # 同 kline_service 分片写入:近5日分钟K单批可达 ~1200 行,单事务批量
     # 比日K更大;分表只减小表体量,不缩短事务持锁时长,故同样分片
