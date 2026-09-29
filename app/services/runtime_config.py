@@ -31,6 +31,7 @@ _HARD_DEFAULTS = {
     "tick_interval_sec": "10",
     "analysis_timeout_sec": "300",
     "intraday_mix_daily": "false",
+    "offhour_mix_minute": "false",
 }
 
 # env 快照:模块加载时读一次(进程生命周期内不变)。
@@ -50,7 +51,7 @@ CONFIG_RANGES = {
 
 # bool 型配置键:不在 CONFIG_RANGES(无数值护栏),走专门的 get_bool / POST 校验。
 # API 层 set 时只接受 'true'/'false' 字符串(或归一化的 true/false JSON 值)。
-CONFIG_BOOL_KEYS = {"intraday_mix_daily"}
+CONFIG_BOOL_KEYS = {"intraday_mix_daily", "offhour_mix_minute"}
 
 _lock = threading.Lock()
 _cache: dict[str, str] = {}   # key -> value(原始字符串)

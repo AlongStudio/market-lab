@@ -25,18 +25,22 @@ _TRADE_START = dtime(9, 30)
 _TRADE_END = dtime(16, 0)
 
 
-def get_policy(now, is_trading_day: bool) -> tuple[tuple[str, ...], int, bool]:
-    """返回 (允许的 data_type 元组, 并发 worker 数, 是否优先领取 minute)。
+def get_policy(now, is_trading_day: bool) -> tuple[tuple[str, ...], int, bool, bool]:
+    """返回 (允许的 data_type 元组, 并发 worker 数, 是否优先领取 minute, 是否允许 minute 回退)。
 
     交易日交易时段默认只跑分钟K;开关 intraday_mix_daily=true 时允许日K组
     混跑(分钟K仍优先,通过 prefer_minute=True 让 claim_tasks 在 SQL 层
     ORDER BY (data_type='minute') DESC, id 保证分钟K不被日K积压饿死)。
-    非交易时段照旧只跑日K组,无"反向混跑分钟K"开关。
+
+    非交易时段默认只跑日K组;开关 offhour_mix_minute=true 时,**当日K组队列
+    领空后**允许回退领取 minute 任务(两段式:minute 永不与日K组抢 worker,
+    仅在日K组空时填位)。开关 false 时行为与现状零变化(T6 §2.2)。
 
     worker 数从 runtime_config 读(运行时可调),常量仅作回退默认。
     """
     if is_trading_day and _TRADE_START <= now.time() < _TRADE_END:
         mix = runtime_config.get_bool("intraday_mix_daily", False)
         types = (MINUTE_TYPES + DAILY_TYPES) if mix else MINUTE_TYPES
-        return types, runtime_config.get_int("intraday_workers", INTRADAY_WORKERS), mix
-    return DAILY_TYPES, runtime_config.get_int("offhour_workers", OFFHOUR_WORKERS), False
+        return types, runtime_config.get_int("intraday_workers", INTRADAY_WORKERS), mix, False
+    mix = runtime_config.get_bool("offhour_mix_minute", False)
+    return DAILY_TYPES, runtime_config.get_int("offhour_workers", OFFHOUR_WORKERS), False, mix

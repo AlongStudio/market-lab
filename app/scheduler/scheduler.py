@@ -7,6 +7,7 @@ tick 间隔运行时可调(runtime_config.tick_interval_sec,5s~60s):APScheduler 
 固定按护栏下限 5s 触发,_tick 内节流决定实际领取间隔,改 DB ≤1 tick 生效。
 """
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import date, datetime
@@ -18,7 +19,7 @@ from app.config import settings
 from app.db.session import SessionLocal
 from app.report.generator import generate_report
 from app.scheduler import analysis_runner, task_gen, task_runner
-from app.scheduler.concurrency import get_policy
+from app.scheduler.concurrency import MINUTE_TYPES, get_policy
 from app.services import meta_service, runtime_config, sentinel_service, stats_service
 
 logger = logging.getLogger(__name__)
@@ -27,12 +28,20 @@ logger = logging.getLogger(__name__)
 # 线程惰性创建不会预占资源,实际并发由 tick 领取量决定
 _pool = ThreadPoolExecutor(max_workers=64, thread_name_prefix="fetch")
 
+# 优雅关闭标志:lifespan 退出段 set, _tick 见到立即停领取(T6 §2.1 C1)。
+# 用 Event 而非 bool:_pool 内多 worker 线程并发读,Event 自带内存屏障,
+# 无需额外锁。drain 完成后 main.py 用它配合 _pool.shutdown 归零在途任务。
+shutdown_event = threading.Event()
+
 _last_claim_ts = 0.0  # 上次真正领取任务的时刻(monotonic)
 
 
 def _tick() -> None:
     """执行循环:按当前时段策略领一批任务并发执行(严格隔离 data_type)。"""
     global _last_claim_ts
+    # 优雅关闭中:不再领新任务,让在途自然完成或被 drain 取消
+    if shutdown_event.is_set():
+        return
     # 熔断器开启时跳过领取,避免 worker 拿到任务后必然超时卡死
     if _breaker.state == "OPEN":
         logger.warning("熔断器开启中,跳过本轮 tick")
@@ -49,10 +58,16 @@ def _tick() -> None:
     try:
         today = date.today()
         trading = meta_service.is_trading_day(db, today)
-        data_types, n, prefer_minute = get_policy(datetime.now(), trading)
+        data_types, n, prefer_minute, minute_fallback = get_policy(datetime.now(), trading)
         tasks = task_runner.claim_tasks(
             db, limit=n, data_types=data_types, prefer_minute=prefer_minute
         )
+        # offhour 分钟K回退(T6 §2.2):日K组领空后,若开关打开则领 minute 填位。
+        # 保隔离:minute 永不与日K组抢 worker,只在日K组空时填位;
+        # 开关 false 时 minute_fallback=False,行为与现状零变化。
+        if not tasks and minute_fallback:
+            logger.info("offhour minute fallback (DAILY_TYPES 队列空)")
+            tasks = task_runner.claim_tasks(db, limit=n, data_types=MINUTE_TYPES)
     finally:
         db.close()
     if not tasks:
