@@ -521,6 +521,35 @@ def get_throughput():
     }
 
 
+# ── 哨兵健康检查(T5 §1.4)──────────────────────────────────────────
+
+@router.get("/metrics/freshness")
+def get_freshness(db: Session = Depends(get_session)):
+    """最近一次哨兵检查结果:四新鲜度 + 假成功检测 + 熔断器状态。
+
+    数据源:sentinel_report 表最新一行(每 15min 写入)。表空时返回 status=UNKNOWN。
+    """
+    from app.services import sentinel_service
+    report = sentinel_service.latest_report(db)
+    if not report:
+        return {"status": "UNKNOWN", "msg": "尚未执行哨兵检查,请等待首次 15min tick"}
+    return report
+
+
+@router.get("/metrics/sources")
+def get_sources():
+    """各数据源熔断器状态快照(实时,不查库)。
+
+    返回 {sources: [...], global_breaker: CLOSED/HALF_OPEN/OPEN}。
+    用于诊断"哪些源被熔断、剩多久冷却"。
+    """
+    from app.akshare_client.client import _breaker, _source_breakers
+    return {
+        "sources": [sb.snapshot() for sb in _source_breakers.values()],
+        "global_breaker": _breaker.state,
+    }
+
+
 # ── K线分析选股(T2,docs/plans/T2 §5)──────────────────────────────
 
 @router.get("/analysis/tasks")

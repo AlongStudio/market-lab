@@ -19,7 +19,7 @@ from app.db.session import SessionLocal
 from app.report.generator import generate_report
 from app.scheduler import analysis_runner, task_gen, task_runner
 from app.scheduler.concurrency import get_policy
-from app.services import meta_service, runtime_config, stats_service
+from app.services import meta_service, runtime_config, sentinel_service, stats_service
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +146,21 @@ def _refresh_stats() -> None:
         db.close()
 
 
+def _sentinel_check() -> None:
+    """哨兵健康检查:每 15 分钟一次,新鲜度 + 假成功检测留痕。
+
+    max_instances=1 + coalesce=True:防 tick 间堆叠,前一轮未完成时本轮直接合并。
+    写入失败只 warn 不阻塞(详见 sentinel_service._persist)。
+    """
+    db = SessionLocal()
+    try:
+        sentinel_service.run_sentinel_check(db)
+    except Exception:
+        logger.exception("sentinel check failed")
+    finally:
+        db.close()
+
+
 def build_scheduler() -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone="Asia/Shanghai")
     # 执行循环:job 固定按 tick 护栏下限 5s 触发,实际领取间隔由
@@ -169,6 +184,9 @@ def build_scheduler() -> BackgroundScheduler:
     sched.add_job(_force_retry_exhausted, "cron", hour=3, minute=17, id="force_retry")
     # 股票统计刷新:每 13 分钟全量重算(供 dashboard 列表排序/筛选)
     sched.add_job(_refresh_stats, "interval", minutes=13, id="refresh_stats",
+                  max_instances=1, coalesce=True)
+    # 哨兵健康检查:每 15 分钟一次,新鲜度 + 假成功检测留痕(T5 §1.4)
+    sched.add_job(_sentinel_check, "interval", minutes=15, id="sentinel",
                   max_instances=1, coalesce=True)
     # 每日报告:收盘后 16:30 + 凌晨回填后 09:05 各一次
     sched.add_job(_gen_report, "cron", hour=16, minute=30, id="report_pm")

@@ -58,6 +58,17 @@
   th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
   th.sortable:hover { color: #2f7cf6; }
   th.sortable .arrow { display: inline-block; width: 10px; color: #2f7cf6; }
+  .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 12px;
+           font-weight: 500; }
+  .badge.success { background: #e8f5e9; color: #2e7d32; }
+  .badge.warn { background: #fff8e1; color: #ef6c00; }
+  .badge.fail { background: #ffebee; color: #c62828; }
+  .badge.muted { background: #f0f2f5; color: #8a8f99; }
+  .sentinel-tbl { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px; }
+  .sentinel-tbl th, .sentinel-tbl td { text-align: left; padding: 6px 10px;
+                                       border-bottom: 1px solid #eee; }
+  .sentinel-tbl th { color: #8a8f99; font-weight: 500; width: 120px; }
+  .sentinel-tbl td:last-child { color: #5a5f66; }
 </style>
 </head>
 <body>
@@ -75,6 +86,13 @@
 </header>
 <div class="wrap">
   <div class="cards" id="cards"></div>
+
+  <section>
+    <h2>数据新鲜度哨兵 <span class="muted" id="sentinelAt" style="font-weight:400"></span></h2>
+    <div id="sentinelBox">
+      <div class="muted">加载中…</div>
+    </div>
+  </section>
 
   <section>
     <h2>采集进度</h2>
@@ -223,6 +241,55 @@ async function loadProgress() {
     `进度 ${d.progress}%  ·  总任务 ${d.total}  ·  ${parts}`;
 }
 
+const SENTINEL_BADGE = {
+  OK:   {cls: 'success', text: '正常'},
+  WARN: {cls: 'warn',   text: '告警'},
+  CRIT: {cls: 'fail',   text: '严重'},
+  UNKNOWN: {cls: 'muted', text: '未知'},
+};
+
+async function loadFreshness() {
+  const box = document.getElementById('sentinelBox');
+  const at = document.getElementById('sentinelAt');
+  let d;
+  try {
+    d = await api('/api/metrics/freshness');
+  } catch (e) {
+    box.innerHTML = '<div class="muted">哨兵数据不可用</div>';
+    at.textContent = '';
+    return;
+  }
+  const badge = SENTINEL_BADGE[d.status] || SENTINEL_BADGE.UNKNOWN;
+  at.textContent = d.checked_at ? '检查于 ' + formatTime(d.checked_at) : '';
+  const checks = (d.detail && d.detail.checks) || {};
+  const items = [
+    ['daily 新鲜度', checks.daily],
+    ['minute 新鲜度', checks.minute],
+    ['weekly 新鲜度', checks.weekly],
+    ['monthly 新鲜度', checks.monthly],
+    ['假成功检测', checks.fake_success],
+    ['熔断器状态', checks.breakers],
+  ];
+  const rows = items.map(([label, c]) => {
+    if (!c) return `<tr><td>${label}</td><td>-</td><td>-</td></tr>`;
+    const b = SENTINEL_BADGE[c.status] || SENTINEL_BADGE.UNKNOWN;
+    const detail = c.msg ? c.msg.substring(0, 80) : '';
+    return `<tr><td>${label}</td>
+      <td><span class="badge ${b.cls}">${b.text}</span></td>
+      <td>${detail}</td></tr>`;
+  }).join('');
+  box.innerHTML = `
+    <div style="margin-bottom:8px">
+      <span class="badge ${badge.cls}" style="font-size:13px;padding:3px 10px">
+        总体状态: ${badge.text}
+      </span>
+    </div>
+    <table class="sentinel-tbl">
+      <thead><tr><th>检查项</th><th>状态</th><th>说明</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 const PAGE_SIZE = 50;
 let curPage = 1;
 let totalStocks = 0;
@@ -368,7 +435,7 @@ async function retryAll() {
 
 async function refresh() {
   try {
-    await Promise.all([loadCards(), loadProgress(), loadDetails(), loadAllFailed()]);
+    await Promise.all([loadCards(), loadProgress(), loadFreshness(), loadDetails(), loadAllFailed()]);
   } catch (e) {
     console.error(e);
   }
