@@ -3,6 +3,8 @@
 .env.dev
 .env.prod
 .env
+.env.nas
+.env.*
 
 # 部署脚本
 scripts/build-and-deploy-*.sh
