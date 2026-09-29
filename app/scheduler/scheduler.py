@@ -105,11 +105,16 @@ def _gen_minute_tasks() -> None:
 
 
 def _gen_daily_incremental() -> None:
-    """收盘后生成日K增量任务(此时段已切回跑日K组)。"""
+    """收盘后生成日K增量 + 周月K增量任务(此时段已切回跑日K组)。
+
+    周月K增量(T6 §7.1):窗口对齐自然周/月,uk_task 幂等;此前周月K
+    只有历史回填生成器,6/24 后零增量任务导致 freshness 永停 6/24。
+    """
     db = SessionLocal()
     try:
         if meta_service.is_trading_day(db, date.today()):
             task_gen.generate_daily_incremental(db)
+            task_gen.generate_weekly_monthly_incremental(db)
     finally:
         db.close()
 

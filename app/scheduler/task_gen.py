@@ -124,6 +124,37 @@ def generate_daily_incremental(db: Session, days_back: int = 7) -> int:
     return _chunked_insert(db, params)
 
 
+def generate_weekly_monthly_incremental(db: Session) -> int:
+    """每日收盘后生成周K/月K增量任务(窗口对齐自然周/月,uk_task 幂等)。
+
+    weekly:  date_start=本周一, date_end=今天
+    monthly: date_start=本月1日, date_end=今天
+    窗口起点固定(周一/月首) → (stock,dt,adjust,start,end) 唯一键天然幂等,
+    同日重跑零重复,跨日窗口推进自然产生新任务。起点必须固定,禁止 days_back
+    滚动窗口——滚动每天产生新 uk_task 组合,任务表会滚出垃圾(T6 §7.1)。
+    周一当天生成的 weekly 窗口 date_start=date_end(单日桶),LOCAL_AGG
+    聚合同样正确。周月K无在线源时由 LOCAL_AGG 兜底落库(T5 §3);
+    本函数只管造任务,adjust 口径与 _BACKFILL_COMBOS 存量一致(周月K仅 "")。
+    """
+    stocks = _active_stocks(db)
+    if not stocks:
+        return 0
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    first_of_month = today.replace(day=1)
+    params = []
+    for code in stocks:
+        params.append({
+            "stock_code": code, "data_type": "weekly", "adjust": "",
+            "date_start": monday, "date_end": today,
+        })
+        params.append({
+            "stock_code": code, "data_type": "monthly", "adjust": "",
+            "date_start": first_of_month, "date_end": today,
+        })
+    return _chunked_insert(db, params)
+
+
 def generate_minute_daily(db: Session) -> int:
     """每交易日收盘后:为全 A 股生成分钟K累积任务(近5日窗口)。
 
