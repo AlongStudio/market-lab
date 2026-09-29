@@ -3,6 +3,7 @@
 > 状态：待开发 | 实现：CC | 规划与验收：Jarvis（2026-09-29）
 > 前置文档：T3（死锁与熔断）、T4（混跑开关）、T5（假成功根治，已发布 09-29 17:23，镜像 12c35a4）
 > 来源：9/28–9/29 排查 + T5 发布过程中实锤的 6 项遗留问题，按优先级 C1→C6。
+> 09-29 22:50 追加 C7（周月K增量生成器 + 分钟K假空防护）：当晚核查实锤两个新缺口，见 §7。
 > 约定：所有行号以 12c35a4 为锚点，实现时以实际代码为准并回写本文档。
 
 ---
@@ -131,7 +132,7 @@ lifespan 启动段（main.py:56 附近）加启动自检，按 data_type 打印�
 
 ### 3.3 配套 env 修正（Jarvis 运维，非 CC 代码）
 
-`.env.nas` 改 `DATA_SOURCE_ORDER=sina,sina_raw,eastmoney,tencent` + 重启容器生效（与回补 SQL 一起执行，见 §8）。
+`.env.nas` 改 `DATA_SOURCE_ORDER=sina,sina_raw,eastmoney,tencent` + 重启容器生效（与回补 SQL 一起执行，见 §9；该条已于 09-29 18:04 执行完成）。
 
 ### 3.4 验收
 
@@ -198,7 +199,7 @@ $NAS_DOCKER run -d ... || { fail "run 失败(检查名字冲突/端口)"; exit 1
 
 ### 6.1 事实
 
-weekly/monthly 各 5,529 条（合计 ~11,058 条）SUCCESS 全是假成功存量（6/24 起零写入）。T5 上线后 requeue（Jarvis SQL，§8）→ 东财仍被封 → 走 `LOCAL_AGG` 本地聚合兜底落库（T5 §3）。
+weekly/monthly 各 5,529 条（合计 ~11,058 条）SUCCESS 全是假成功存量（6/24 起零写入）。T5 上线后 requeue（Jarvis SQL，§9）→ 东财仍被封 → 走 `LOCAL_AGG` 本地聚合兜底落库（T5 §3）。
 
 ### 6.2 CC 侧验收与观察点
 
@@ -209,13 +210,83 @@ weekly/monthly 各 5,529 条（合计 ~11,058 条）SUCCESS 全是假成功存�
 
 ---
 
-## 7. 观察项（先不动）
+## 7. C7（P0）：周月K增量生成器 + 分钟K假空防护（09-29 22:50 追加）
+
+### 7.0 事实依据（当晚 22:42 核查实锤）
+
+| # | 发现 | 证据 |
+|---|---|---|
+| A | **周月K没有增量生成器** | task_gen.py 仅有 generate_backfill（89 行，历史分片）/ generate_daily_incremental（110 行，仅 daily 三口径）/ generate_minute_daily（127 行）。今日 LOCAL_AGG 落库 weekly 351 万行 / monthly 84 万行**全是 ≤6/24 窗口的历史回填聚合**；weekly/monthly 的 fetch_task 在 6/24 之后零任务，freshness 永停 2026-06-24——C6 验收（追到 9 月）按现状不可能达成 |
+| B | **分钟K假成功 v2 复发** | 今日 09:00–14:00 盘中 20,888 条 minute SUCCESS，但 32 分表 9/29 新增行 = 0（抽样 5 表 + SH688459 按 crc32 定位分表 25 精查：该股最后一行停在 6/26 10:49）。机制：当时容器 env 仍为 `sina,tencent`（18:04 才加 sina_raw）→ minute 有效源只剩 akshare sina 单路 → 新浪返回**空 DataFrame（不抛异常）** → 命中 T5 §1.2 真空语义（真实调用过且返回空 = 合法 SUCCESS）→ 零写入标成功 |
+
+变种说明：T5 修的是「全熔断 → 循环未进 → return []」；本次是「**单源静默空返回 → 真空语义被滥用**」。同家族不同变种。且 sina_raw 与 akshare sina 打的是同一个新浪端点（quotes.sina.cn CN_MarketDataService）——若新浪对 NAS IP 软限流返回空而非报错，双保险一起哑，现有语义挡不住。
+
+### 7.1 C7-A：周月K增量生成器
+
+`task_gen.py` 新增：
+
+```python
+def generate_weekly_monthly_incremental(db: Session) -> int:
+    """每日收盘后生成周K/月K增量任务(窗口对齐自然周/月,uk_task 幂等)。
+
+    weekly:  date_start=本周一, date_end=今天
+    monthly: date_start=本月1日, date_end=今天
+    窗口起点固定(周一/月首) → (stock,dt,adjust,start,end) 唯一键天然幂等,
+    同日重跑零重复,跨日窗口推进自然产生新任务。
+    周月K无在线源时由 LOCAL_AGG 兜底落库(T5 §3);本函数只管造任务。
+    """
+```
+
+要点：
+
+- **窗口起点必须固定**（周一/月首），禁止 days_back 滚动窗口——滚动窗口每天产生新 uk_task 组合，任务表会滚出垃圾
+- 挂载：并入 16:10 `_gen_daily_incremental`（先 daily 后周月）或独立 job 16:20，CC 定；插入同样走 `_chunked_insert` 分批（9/29 手动触发生成 16,743 条耗时 140s 的教训：大批 executemany 是中断风险点，分批已验证）
+- adjust 口径与 `_BACKFILL_COMBOS` 对齐（周月K现有存量口径，CC 核对常量后复用）
+- LOCAL_AGG 聚合按窗口读日K，周一当天生成的 weekly 窗口 date_start=date_end（单日桶）聚合同样正确
+- **迁移期一次性动作**：6/24 → 9/29 的周月K窗口任务缺口（约 14 个周一 + 4 个月首 × 全市场）不塞进常驻代码——上线后由 Jarvis 用一次性 SQL/脚本补窗口任务， freshness 才能从 6/24 追到当周
+
+### 7.2 C7-B：分钟K假空防护
+
+原则：**不推翻 T5 §1.2 真空语义**（新股/退市真空仍合法 SUCCESS），只对「本不该真空的场景」设防。判据：活跃股（daily_kline 近 10 日有数据）的分钟K（窗口近 5 日）不可能真空。
+
+分层防御：
+
+1. **upsert_minute 假空判据**（minute_service.py，T5 加的 `if not rows` ZERO_WRITE 分支升级）：
+
+```python
+if not rows:
+    recent = db.execute(text(
+        "SELECT 1 FROM daily_kline WHERE stock_code=:c "
+        "AND trading_date >= :d LIMIT 1"),
+        {"c": stock_code, "d": date.today() - timedelta(days=10)}).first()
+    if recent:
+        raise RuntimeError(   # 假空:活跃股分钟K空返回=源静默失败
+            f"活跃股分钟K空返回(疑似源静默失败): {stock_code}")
+    logger.warning("ZERO_WRITE minute %s (真空,新股/退市)", stock_code)
+    return 0
+```
+
+代价：仅空返回路径多一次索引点查，正常路径零开销。
+
+2. **源级连续空告警**（client.py，`_fetch_with_fallback` 对返回空计数）：同一源 5 分钟窗内空返回 >100 次且占比 >90% → CRIT 日志 + 视同故障记账（走既有熔断路径）。**这是防「新浪软限流返回空」的核心信号**——sina_raw 与 akshare sina 同端点，两个保险一起哑时只有这个计数能发现。具体阈值/窗口 CC 实现时定，要求：可观测 + 触发后能在日志里明确看到。
+
+   > **实现说明（09-29 CC 落地）**：阈值/窗口按上文实现（300s / >100 次 / >90% 占比，`_EmptyWindowCounter`）。「视同故障记账」有一处实现修正——空返回发生在调用成功记账（`_record_success`）之后，若复用 `on_failure` 会被下一次调用成功的 `on_success` 清零，连续失败计数永远到不了隔离阈值；故改为窗口判定达阈后直接调 `_SourceBreaker.force_open()`（计数置满 + 隔离 5 分钟），复用既有 `is_available` 半开试探路径。每窗只打 1 条 CRIT（防刷屏），窗口过期自然重置可再次触发。零星真空（新股 <5% 占比）实测不误触发。
+
+3. **哨兵覆盖确认**：minute freshness CRIT 今晚在报（latest=6/26）——路径已验证通畅，无需改动。
+
+### 7.3 死锁观察（本期不动，升级条件明确）
+
+今晚 weekly 2,546 条 1213 死锁（64 worker 并发 LOCAL_AGG 大批 IODKU gap lock 互撞）+ 7 条 QueuePool 耗尽；03:17 force_retry 自动重投。**若 9/30 晚 LOCAL_AGG 再发 >1,000 条死锁** → CC 将聚合写入串行化（独立单线程池）或插入批减半。先观察一晚。
+
+---
+
+## 8. 观察项（先不动）
 
 **QPS=5 全局令牌桶**在排放期是硬瓶颈。按 T5 §6 观察 30 分钟后若确认瓶颈在桶（而非源端限流），再考虑按源分桶（如 sina_raw 独立桶）——分桶会让"全局 5 QPS 对远端礼貌"变成"N 源 × 5 QPS"，需 Victor 拍板。本轮不改。
 
 ---
 
-## 8. 配套运维动作（Jarvis 执行，非 CC 代码，给 CC 提供上下文）
+## 9. 配套运维动作（Jarvis 执行，非 CC 代码，给 CC 提供上下文）
 
 T6 开发期间/上线后按序执行（均已获 Victor 批准）：
 
@@ -223,11 +294,14 @@ T6 开发期间/上线后按序执行（均已获 Victor 批准）：
 2. SQL#2：BJ 分钟K SH92% 前缀 12,805 条 SKIPPED → PENDING
 3. 手动触发一次 `generate_daily_incremental`（docker exec）——9/25–9/29 的 daily 任务生成器断了，任务不存在，光 requeue 补不齐
 4. weekly/monthly 假成功存量 ~11,058 条 SUCCESS → PENDING（走 LOCAL_AGG）
-5. `.env.nas` 加 sina_raw（§3.3）+ 重启容器生效
+5. `.env.nas` 加 sina_raw（§3.3）+ 重启容器生效（**已执行 09-29 18:04，前 5 步全部完成**：daily 9/28 已补齐、BJ 12,805 已 requeue、增量 16,743 已生成、周月K 11,058 已 requeue 且 LOCAL_AGG 落库 351万/84万行）
+6. 【C7 配套】明早开盘前容器内手动验证 `fetch_minute` 真实返回非空（今日假空复发的临时防线，C7-B 落地前的判断依据）
+7. 【C7 配套】6/24→9/29 周月K窗口任务一次性补齐（约 14 周一 + 4 月首 × 全市场，一次性 SQL/脚本，勿塞常驻代码）
+8. 【C7 配套】验证 sina 真实返回后，requeue 今日 SUCCESS 的 minute 假空任务（IODKU 幂等，重复无害）
 
 ---
 
-## 9. 验收标准汇总
+## 10. 验收标准汇总
 
 | # | 验收项 | 方法 |
 |---|---|---|
@@ -237,13 +311,15 @@ T6 开发期间/上线后按序执行（均已获 Victor 批准）：
 | 4 | 部署脚本 | Exited 同名容器正确清理；端口冲突显式失败非 0 |
 | 5 | 空洞评估 | 评估报告落 docs/，结论明确 |
 | 6 | 假成功恢复 | freshness weekly/monthly 追到 9 月；LOCAL_AGG 比例可观测 |
+| 7 | C7-A 周月K增量 | 16:10 后 weekly/monthly 当日窗口任务存在（uk_task 无重复）；次日起 freshness 周月K MAX 跟进到当周/当月 |
+| 8 | C7-B 假空防护 | 活跃股 minute 空返回 → FAILED + last_error 含「活跃股分钟K空返回」；新股/退市 → 仍 SUCCESS + ZERO_WRITE 日志；单源连续空 → 源级 CRIT 日志可见 |
 
-## 10. 上线与回滚
+## 11. 上线与回滚
 
-- 代码改动集中：main.py（C1 drain + C3 自检）、scheduler.py/concurrency.py（C2）、deploy-to-nas.sh（C4）
+- 代码改动集中：main.py（C1 drain + C3 自检）、scheduler.py/concurrency.py（C2）、deploy-to-nas.sh（C4）、task_gen.py + scheduler.py 挂载（C7-A 周月K生成）、minute_service.py + client.py（C7-B 假空防护）
 - 无 schema 变更、无新表；runtime_config 新键 2 个（offhour_mix_minute + 既有模式）
 - 回滚 = 回退镜像 / 回退脚本；两个开关默认 false，行为与现状零差异
 
 ---
 
-*本文档由 Jarvis 起草 2026-09-29，事故证据链见 §0/§3/§4（9/28–9/29 排查会话）。实现与实际代码冲突时以实际代码为准并回写本文档。*
+*本文档由 Jarvis 起草 2026-09-29，C7 于同日 22:50 追加。事故证据链见 §0/§3/§4/§7.0（9/28–9/29 排查会话）。实现与实际代码冲突时以实际代码为准并回写本文档。*
