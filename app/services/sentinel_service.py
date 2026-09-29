@@ -83,15 +83,18 @@ def _check_minute_freshness(db: Session, now: datetime) -> dict:
     """
     today = now.date()
     is_trade_day = _latest_trade_date(db, today) == today
-    latest_per_table = []
-    for t in all_minute_tables():
-        v = db.execute(text(f"SELECT MAX(minute_time) FROM {t}")).scalar()
-        if v is not None:
-            latest_per_table.append(v)
-    if not latest_per_table:
+    # UNION ALL 单次查询取 32 分表 MAX 的 MIN,避免 32 次串行查询
+    tables = all_minute_tables()
+    union = " UNION ALL ".join(
+        f"SELECT MAX(minute_time) AS mx FROM {t}" for t in tables
+    )
+    rows = db.execute(
+        text(f"SELECT MIN(mx) AS worst FROM ({union}) AS s WHERE mx IS NOT NULL")
+    ).mappings().all()
+    if not rows or rows[0]["worst"] is None:
         return {"status": "CRIT", "latest": None, "expected": None,
                 "msg": "32 分表全部为空"}
-    worst = min(latest_per_table)
+    worst = rows[0]["worst"]
     # 期望值
     expected = None
     if is_trade_day:
@@ -203,13 +206,15 @@ def _check_fake_success(db: Session, now: datetime) -> dict:
             {"d": window_start.date()},
         ).scalar() or 0
         new_rows[dt] = n
-    # minute: 32 分表合计 minute_time >= window_start
-    minute_n = 0
-    for t in all_minute_tables():
-        minute_n += db.execute(
-            text(f"SELECT COUNT(*) FROM {t} WHERE minute_time >= :s"),
-            {"s": window_start},
-        ).scalar() or 0
+    # minute: 32 分表合计 minute_time >= window_start,UNION ALL 单次查询
+    minute_tables = all_minute_tables()
+    union = " UNION ALL ".join(
+        f"SELECT COUNT(*) AS cnt FROM {t} WHERE minute_time >= :s" for t in minute_tables
+    )
+    minute_n = db.execute(
+        text(f"SELECT COALESCE(SUM(cnt), 0) FROM ({union}) AS s"),
+        {"s": window_start},
+    ).scalar() or 0
     new_rows["minute"] = minute_n
 
     # 检测假成功:某 data_type SUCCESS 大但表新增 0

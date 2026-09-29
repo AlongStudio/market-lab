@@ -231,11 +231,13 @@ def data_overview(db: Session = Depends(get_session)):
         out[label] = {"rows": cnt}
     latest = db.execute(text("SELECT MAX(trading_date) FROM daily_kline")).scalar()
     out["daily"]["latest_date"] = latest.isoformat() if latest else None
-    # 分钟K 各分表行数汇总
-    minute_total = 0
-    for t in all_minute_tables():
-        minute_total += db.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar() or 0
-    out["minute"] = {"rows": minute_total, "tables": len(all_minute_tables())}
+    # 分钟K 各分表行数汇总:UNION ALL 单次查询取总和,避免 32 次串行 COUNT
+    minute_tables = all_minute_tables()
+    union = " UNION ALL ".join(f"SELECT COUNT(*) AS cnt FROM {t}" for t in minute_tables)
+    minute_total = db.execute(
+        text(f"SELECT COALESCE(SUM(cnt), 0) FROM ({union}) AS s")
+    ).scalar() or 0
+    out["minute"] = {"rows": minute_total, "tables": len(minute_tables)}
     return out
 
 
