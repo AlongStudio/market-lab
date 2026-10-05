@@ -24,7 +24,9 @@ _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Referer": "https://finance.sina.com.cn",
 }
-_JSONP_RE = re.compile(r"var\s+t\s*=\s*(\[.*\]);?", re.DOTALL)
+# 2026-10-01 容器内实测(171,693 字节):`=` 后是 `(` 而非 `[`,
+# 形如 `var t=([...]);`,旧正则缺 `\(` 永不匹配 → 源静默返回空(T7 P1)
+_JSONP_RE = re.compile(r"var\s+t\s*=\s*\((\[.*\])\);?", re.DOTALL)
 
 
 def fetch_minute_sina_raw(symbol_with_prefix: str, datalen: int = 1200) -> list[dict]:
