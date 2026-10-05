@@ -42,7 +42,18 @@ var t=([{"day":"2026-09-22 14:49:00","open":"1255.400",...}]);
 三源叠加 → `fetch_minute` 返回 `[]` → C7-B 活跃股防护正确转 FAILED（防护工作正常，
 真警非误报）。修复 §0.1 后 sina_raw 即为可用分钟K源。
 
-### 0.3 daily 增量生成器的"源未发布"竞态（9-30 静默缺口）
+### 0.3 楔死事故（10-01 20:55 ~ 10-05 13:07，已被迫处理）
+
+更正时间线：10-01 晚诊断会话结束后不久，应用线程池楔死（API 全端点超时、scheduler
+零活动、105 线程全 futex 等待、RUNNING=0），sentinel 断更 4 天。docker restart 挂死
+→ daemon 单容器状态机楔死 → 容器主进程已死但记账卡「Up」→ 最终经 `docker run --pid=host`
+杀挂死客户端与 shim、chroot `systemctl restart pkgctl-ContainerManager` 重启 daemon
+清掉楔死记账（mysql/lxqt unless-stopped 自动回来），再 `docker rm` 旧容器 + 跑
+deploy 脚本拉起。**该事故与 T6 C1（优雅关闭 drain）和 deploy 脚本加固（C4）直接
+相关，给 T7 增加了新的紧迫性**：修复 sina_raw 前应用无法采集分钟K，而每次部署/
+重启都有楔死复发风险——P1 是让三源之一活过来的最短路径。
+
+### 0.4 daily 增量生成器的"源未发布"竞态（9-30 静默缺口）
 
 9-30（节前最后交易日）16:10 `gen_daily` 生成的日K任务全 SUCCESS，但按板块统计
 daily_kline 9-30 行大面积缺失：
@@ -200,10 +211,23 @@ end_date < 今天 抛错、end_date == 今天 时 logger.warning 放行(当前�
 - CC 按 P1/P2 各一个 commit(主题分开,便于单独回滚 P2)。
 - Jarvis 部署后先跑验收 2/3,再执行 requeue(Jarvis 运维 SQL,非本文档范围),
   观察 FAILED 重试收敛。
+- **时间盒(2026-10-05 更新)**:10-08(节后首个交易日)前完成 P1 部署 + minute
+  requeue,窗口紧。CC 实现时若 P2 边界拿不准,优先保 P1 落地,P2 可随后跟进。
+- 部署方式提醒(Jarvis 自查项,CC 无需动作):deploy 后必须验证容器真的起来了——
+  本次楔死事故中 deploy 脚本的「✓ 部署完成」在 docker run 失败时照样打印(C4 洞),
+  验收以 `/dashboard` 200 + scheduler 日志跳动为准。
 - 回滚:revert P2 commit 即恢复旧行为;P1 独立无依赖。
 
 ## 附:Jarvis 侧运维动作(非 CC 范围,记录于此供对齐)
 
-1. requeue 9-30 daily 缺口股(SH/STAR,~2,000 只 × 3 口径)+ 周月K 9-30 缺口。
-2. requeue 9-29 假成功 minute 存量(sina_raw 修复生效后)。
-3. 观察夜间 offhour 消化与 1213 死锁税(预期同 9-29 晚量级,force_retry 兜底)。
+1. ~~requeue 9-30 daily 缺口股~~ **已完成(2026-10-05)**:含意外恢复的线程池楔死处置
+   (daemon 重启+容器重建)。终态 daily/weekly/monthly 9-30 全部 5,560 只,对齐 daily。
+   残余:weekly 20 + monthly 14 条 FAILED(1213 死锁,requeue 兜底中)。
+2. requeue 9-29/9-30 minute 存量(P1 生效后):**注意 10-08 开盘前必须完成 P1 部署
+   +requeue,否则假期结束 minute 又是零采集**(9-29/9-30 两批各 5,581/5,583 条
+   PENDING;近 5 日窗口随时间流失,10-08 跑只能补到 10-08 前 5 个交易日的分钟K)。
+3. 观察夜间 offhour 消化与 1213 死锁税(10-05 实测:64 worker 高峰 ~40-60 条/10min,
+   retry=1 自动兜底,吞吐 ~9.8k/h,无需干预)。
+4. 新增(10-05 楔死事故后续):T6 C1 优雅关闭 drain 的优先级应上调——本次 4 天
+   断采的近因就是 shutdown 挂死引发的连锁;deploy 脚本 stop 无 timeout 的洞(C4)
+   同源。若 CC 排期允许,P1/P2 之外优先补这两个 T6 项。
