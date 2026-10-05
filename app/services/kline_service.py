@@ -128,7 +128,52 @@ def upsert_kline(
     for i in range(0, len(params), CHUNK):
         db.execute(sql, params[i:i + CHUNK])
         db.commit()
+    # 末日 bar 校验放在写入后:写入后表里仍无 (stock_code, end_date) 行,
+    # 才说明源 rows 缺末日行(9-30 部分写入形态)。若放写入前,首跑任务表里
+    # 必无该行,rows 完整也会误抛 → FAILED 死循环。
+    _assert_end_bar(db, table_key, table, stock_code, end_date)
     return len(params)
+
+
+# ── 末日 bar 校验(T7 P2):源未发布竞态防护 ──────────────────────────
+def _assert_end_bar(db: Session, table_key: str, table: str,
+                    stock_code: str, end_date) -> None:
+    """end_date 为已过去的交易日但目标表无该行 → 抛错走 FAILED 重试。
+
+    9-30 实测:sina 节前大流量日 16:31~16:46 才发布当日日K,16:10 生成的
+    任务在源发布前跑完,SUCCESS 但末日行大面积缺失(C7-B 只盖 minute,
+    daily 裸奔,docs/plans/T7-sina-raw-regex-and-daily-endbar-guard.md §0.4)。
+
+    边界语义(防误伤):
+      - end_date None/未来日期 → 不校验(防御性跳过)
+      - 非交易日(周末/节假日) → trade_calendar 无该行,不校验
+      - rows 为空不进本函数(ZERO_WRITE 真空语义保留:退市/新股空返回合法)
+      - weekly/monthly 的 end_date=今天只 WARN 放行:当前周/月 bar 本每日
+        刷新,次日窗口推进自然补齐;抛错只会制造 FAILED→requeue 循环,
+        放大 1213 死锁税。daily 始终校验(当日完整性是 dashboard 核心承诺)
+      - 点查为主键点查,代价可忽略(与 C7-B minute 防护同构)
+    """
+    if end_date is None or end_date > date.today():
+        return
+    row = db.execute(
+        text("SELECT 1 FROM trade_calendar WHERE trade_date=:d"),
+        {"d": end_date},
+    ).first()
+    if not row:
+        return
+    if end_date == date.today() and table_key in ("weekly", "monthly"):
+        logger.warning(
+            "END_BAR_DEFER %s %s %s 末日=今天,daily 未落库前放行,待次日窗口补齐",
+            table_key, stock_code, end_date)
+        return
+    row = db.execute(
+        text(f"SELECT 1 FROM {table} WHERE stock_code=:c AND trading_date=:d "
+             "LIMIT 1"),
+        {"c": stock_code, "d": end_date},
+    ).first()
+    if not row:
+        raise RuntimeError(
+            f"末日bar缺失(源未发布?): {table} {stock_code} {end_date}")
 
 
 # ── 周月K 本地聚合兜底 ──────────────────────────────────────────────
