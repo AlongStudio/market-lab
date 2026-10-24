@@ -12,6 +12,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
+from app.scheduler.task_gen import stale_stock_codes
 from app.services import kline_service, metrics, minute_service
 
 logger = logging.getLogger(__name__)
@@ -207,7 +208,23 @@ def reset_running_on_startup(db: Session) -> int:
 def force_requeue_exhausted(db: Session) -> int:
     """强制重置已耗尽重试(retry_count>=MAX_RETRY)的 FAILED 任务:清零 retry_count
     重新排队。供运维在排除根因(如网络)后手动触发,避免大量任务永久冻结在 FAILED。
+
+    停牌股例外(T8 P1b):FAILED 先转 SKIPPED 终态(可见、requeue_skipped 可
+    手动复活),不再每日重投——389 条僵尸每日 ~1,900 次无效外呼 + QPS 令牌
+    净耗的根源。复牌后常规恢复靠生成器新窗口任务(当周 weekly 窗口含复牌日,
+    LOCAL_AGG 从 daily 聚合自动补),无需人工干预。
     """
+    stale = stale_stock_codes(db)
+    if stale:
+        db.execute(
+            text("UPDATE fetch_task SET status='SKIPPED', "
+                 "last_error='停牌股终态:最后交易日落后>=10交易日,force_retry不再重投' "
+                 "WHERE status='FAILED' AND retry_count >= :m "
+                 "AND stock_code IN :stale"
+                 ).bindparams(bindparam("stale", expanding=True)),
+            {"m": MAX_RETRY, "stale": sorted(stale)},
+        )
+        db.commit()
     result = db.execute(
         text("UPDATE fetch_task SET status='PENDING', locked_at=NULL, "
              "retry_count=0, last_error=NULL "
