@@ -95,7 +95,15 @@ def _refresh_meta() -> None:
 
 
 def _gen_minute_tasks() -> None:
-    """盘前生成当日分钟K任务,交易时段一开始即有任务可领。"""
+    """收盘后生成当日分钟K任务(T8 P2a):15:00 收盘后源端当日 bar 已齐
+    (sina_raw 实时线),35 分钟缓冲避开科创/创业板盘后定价交易时段;
+    当日数据当晚落库,minute freshness 提前一整天(旧 09:00 生成是 T+1)。
+
+    落库时间线:15:35-16:00 盘中 worker(16 个)优先领 minute → 16:00-16:10
+    offhour 64 worker 接力 → 16:10 gen_daily 灌入日K组后 minute 回退让位
+    (日K组空时才领)→ 日K组 ~1.1h 清完 → minute 收尾,典型 17:30-18:00
+    全部落库。09:00-09:31 offhour 能跑完的机制同理适用于收盘后时段。
+    """
     db = SessionLocal()
     try:
         if meta_service.is_trading_day(db, date.today()):
@@ -189,8 +197,9 @@ def build_scheduler() -> BackgroundScheduler:
                   coalesce=True)
     # 元数据刷新:每日 08:00
     sched.add_job(_refresh_meta, "cron", hour=8, minute=0, id="refresh_meta")
-    # 分钟K任务生成:盘前 09:00(交易时段开始即有任务可领)
-    sched.add_job(_gen_minute_tasks, "cron", hour=9, minute=0, id="gen_minute")
+    # 分钟K任务生成:收盘后 15:35(当日 bar 当晚落库,T8 P2a;
+    # 35 分钟缓冲避开科创/创业板盘后定价交易时段)
+    sched.add_job(_gen_minute_tasks, "cron", hour=15, minute=35, id="gen_minute")
     # 日K增量生成:收盘后 16:10(此时段已切回跑日K组)
     sched.add_job(_gen_daily_incremental, "cron", hour=16, minute=10, id="gen_daily")
     # K线分析选股:收盘后 16:15(增量任务生成之后,自检当日数据已入库)
