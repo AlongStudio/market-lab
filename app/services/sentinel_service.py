@@ -8,7 +8,8 @@ sentinel_report 表把每次检查的 OK/WARN/CRIT 状态 + 四新鲜度 + 明�
 六项检查:
   1. daily 新鲜度:MAX(trading_date) vs 交易日历(T 18:00 后 ≥ T;前 ≥ 上一交易日)
   2. minute 新鲜度:32 分表 MAX(minute_time) 取 MIN
-     (盘中 ≥ now-30min;收盘后 ≥ 当日 14:55)
+     (交易日 19:00 前 ≥ 上一交易日 15:00;19:00 后 ≥ 当日 14:55——
+      收盘后批量采集设计,盘中/采集窗口以昨收为基线)
   3. weekly 新鲜度:MAX(trading_date)(周五 18:00 后 ≥ 本周;否则 ≥ 上周)
   4. monthly 新鲜度:MAX(trading_date)(月末 18:00 后 ≥ 本月;否则 ≥ 上月)
   5. 假成功检测:近 15min SUCCESS 数 vs 对应数据表新增行数
@@ -78,8 +79,14 @@ def _check_daily_freshness(db: Session, now: datetime) -> dict:
 def _check_minute_freshness(db: Session, now: datetime) -> dict:
     """32 分表 MAX(minute_time) 取 MIN,代表"最差分表"。
 
-    判定:交易日 09:35~15:00 盘中应 ≥ now-30min;15:00 后应 ≥ 当日 14:55。
-    非交易日 / 盘前无期望,仅留 latest 留痕。
+    三段式预期(T8 P2b,配合 P2a 15:35 收盘后批量采集设计):
+      交易日 09:35~19:00 → 上一交易日 15:00(盘中基线=昨收;15:00 后
+      当日采集窗口进行中——典型 17:30~18:00 落库,维持昨收基线不误报)
+      交易日 >=19:00 → 当日 14:55(采集必须已完成;落后=真故障,
+      源挂/楔死/积压,此时 CRIT 有意义)
+      其余时段(盘前/非交易日) → 无期望,仅留痕
+    19:00 死线容错:极端日K积压日 minute 落库可能压到 ~19:10,19:00 tick
+    短暂 CRIT、19:15 tick 自愈——可接受,"积压压到死线"本身值得暴露。
     """
     today = now.date()
     is_trade_day = _latest_trade_date(db, today) == today
@@ -99,12 +106,15 @@ def _check_minute_freshness(db: Session, now: datetime) -> dict:
     expected = None
     if is_trade_day:
         t935 = datetime.combine(today, datetime.min.time()).replace(hour=9, minute=35)
-        t1500 = datetime.combine(today, datetime.min.time()).replace(hour=15, minute=0)
+        t1900 = datetime.combine(today, datetime.min.time()).replace(hour=19, minute=0)
         t1455 = datetime.combine(today, datetime.min.time()).replace(hour=14, minute=55)
-        if t935 <= now <= t1500:
-            expected = now - timedelta(minutes=30)
-        elif now > t1500:
+        if now >= t1900:
             expected = t1455
+        elif now >= t935:
+            prev = _latest_trade_date(db, today - timedelta(days=1))
+            if prev is not None:
+                expected = datetime.combine(
+                    prev, datetime.min.time()).replace(hour=15)
     if expected is None:
         return {"status": "OK", "latest": worst.isoformat(timespec="minutes"),
                 "expected": None, "msg": "非交易时段,仅留痕"}
