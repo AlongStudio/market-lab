@@ -1,24 +1,8 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>market-lab 试跑历史</title>
+{% extends "base.html" %}
+{% block title %}market-lab 试跑历史{% endblock %}
+{% block page_title %}试跑历史{% endblock %}
+{% block page_style %}
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
-         background: #f5f6f8; color: #1f2329; }
-  header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px;
-           display: flex; justify-content: space-between; align-items: center; }
-  header .nav { display: flex; align-items: center; gap: 18px; }
-  header .nav a { color: #cfd3d9; font-size: 14px; text-decoration: none; }
-  header .nav a:hover { color: #fff; }
-  header .logout { background: transparent; border: 1px solid #5a5f66; color: #cfd3d9;
-                   padding: 5px 12px; font-size: 13px; }
-  header .logout:hover { background: #2c3138; }
-  .wrap { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
-  section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px;
-            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee;
@@ -28,7 +12,6 @@
            border-radius: 6px; cursor: pointer; font-size: 13px; }
   button:hover { background: #1f6ae0; }
   button:disabled { background: #c9d2dd; cursor: not-allowed; }
-  .muted { color: #8a8f99; font-size: 12px; }
   .err { color: #c62828; font-size: 12px; word-break: break-all; max-width: 280px; }
   .filters { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
   .filters select { padding: 6px 10px; border: 1px solid #dcdfe6;
@@ -58,21 +41,8 @@
   dialog .modal-foot { padding: 12px 18px; text-align: right;
                        border-top: 1px solid #eee; }
 </style>
-</head>
-<body>
-<header><span>market-lab 试跑历史</span>
-  <div class="nav">
-    <a href="/dashboard">管理面板</a>
-    <a href="/kline">K线查询</a>
-    <a href="/analysis">分析选股</a>
-    <a href="/analysis/strategies">策略管理</a>
-    <a href="/analysis/run">策略执行</a>
-    <a href="/analysis/test-runs" style="color:#fff;font-weight:500">试跑历史</a>
-    <a href="/settings">运行设置</a>
-    <button class="logout" onclick="logout()">退出登录</button>
-  </div>
-</header>
-<div class="wrap">
+{% endblock %}
+{% block content %}
   <section>
     <h2>试跑历史 <span class="muted" id="totalHint" style="font-weight:400"></span></h2>
     <div class="filters">
@@ -101,41 +71,15 @@
       <button id="nextBtn" onclick="changePage(1)">下一页</button>
     </div>
   </section>
-</div>
 
-<dialog id="sqlDialog">
-  <div class="modal-head">SQL 预览(只读)</div>
-  <div class="modal-body"><textarea id="sqlFull" readonly></textarea></div>
-  <div class="modal-foot"><button onclick="closeSqlDialog()">关闭</button></div>
-</dialog>
-
+  <dialog id="sqlDialog">
+    <div class="modal-head">SQL 预览(只读)</div>
+    <div class="modal-body"><textarea id="sqlFull" readonly></textarea></div>
+    <div class="modal-foot"><button onclick="closeSqlDialog()">关闭</button></div>
+  </dialog>
+{% endblock %}
+{% block page_script %}
 <script>
-function getToken() { return localStorage.getItem('token') || ''; }
-
-function gotoLogin() {
-  localStorage.removeItem('token');
-  location.replace('/login');
-}
-
-// 无 token 直接回登录页,避免空跑一圈请求
-if (!getToken()) gotoLogin();
-
-async function api(path, opts) {
-  opts = opts || {};
-  opts.headers = Object.assign({}, opts.headers, {
-    'Authorization': 'Bearer ' + getToken(),
-  });
-  const r = await fetch(path, opts);
-  if (r.status === 401) { gotoLogin(); throw new Error('未授权'); }
-  // 滑动续期:服务端每次有效响应都回发新 token
-  const refreshed = r.headers.get('X-Refresh-Token');
-  if (refreshed) localStorage.setItem('token', refreshed);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-function logout() { gotoLogin(); }
-
 function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -302,5 +246,4 @@ async function init() {
 
 init();
 </script>
-</body>
-</html>
+{% endblock %}

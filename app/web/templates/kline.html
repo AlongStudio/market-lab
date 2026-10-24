@@ -1,25 +1,8 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>market-lab K线查询</title>
+{% extends "base.html" %}
+{% block title %}market-lab K线查询{% endblock %}
+{% block page_title %}K线查询{% endblock %}
+{% block page_style %}
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
-         background: #f5f6f8; color: #1f2329; }
-  header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px;
-           display: flex; justify-content: space-between; align-items: center; }
-  header .nav { display: flex; align-items: center; gap: 18px; }
-  header .nav a { color: #cfd3d9; font-size: 14px; text-decoration: none; }
-  header .nav a:hover { color: #fff; }
-  header .logout { background: transparent; border: 1px solid #5a5f66; color: #cfd3d9;
-                   padding: 5px 12px; font-size: 13px; }
-  header .logout:hover { background: #2c3138; }
-  .wrap { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
-  section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px;
-            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-  .muted { color: #8a8f99; font-size: 12px; }
   .searched { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
   .searched .code { font-size: 18px; font-weight: 600; }
   .searched .name { color: #8a8f99; font-size: 13px; }
@@ -63,19 +46,8 @@
   .kr-empty { text-align: center; color: #8a8f99; padding: 80px 0; }
   .kr-minute-day { padding: 5px 10px; border: 1px solid #dcdfe6; border-radius: 6px; font-size: 13px; }
 </style>
-</head>
-<body>
-<header><span>market-lab K线查询</span>
-  <div class="nav">
-    <a href="/dashboard">管理面板</a>
-    <a href="/analysis">分析选股</a>
-    <a href="/analysis/strategies">策略管理</a>
-    <a href="/analysis/run">策略执行</a>
-    <a href="/settings">运行设置</a>
-    <button class="logout" onclick="logout()">退出登录</button>
-  </div>
-</header>
-<div class="wrap">
+{% endblock %}
+{% block content %}
   <section>
     <div class="stock-search">
       <input id="stockInput" placeholder="代码/名称/拼音首字母(如 zgpa / 600519 / 贵州茅台)" autocomplete="off">
@@ -94,35 +66,11 @@
 
     <div id="klineMount"></div>
   </section>
-</div>
-
+{% endblock %}
+{% block page_script %}
 <script src="/static/echarts.min.js"></script>
 <script src="/static/kline-render.js"></script>
 <script>
-function getToken() { return localStorage.getItem('token') || ''; }
-
-function gotoLogin() {
-  localStorage.removeItem('token');
-  location.replace('/login');
-}
-
-if (!getToken()) gotoLogin();
-
-async function api(path, opts) {
-  opts = opts || {};
-  opts.headers = Object.assign({}, opts.headers, {
-    'Authorization': 'Bearer ' + getToken(),
-  });
-  const r = await fetch(path, opts);
-  if (r.status === 401) { gotoLogin(); throw new Error('未授权'); }
-  const refreshed = r.headers.get('X-Refresh-Token');
-  if (refreshed) localStorage.setItem('token', refreshed);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-function logout() { gotoLogin(); }
-
 const esc = KlineRender.esc;
 
 const state = {
@@ -271,5 +219,4 @@ window.addEventListener('resize', () => {
 // 初始加载默认清单
 onInput();
 </script>
-</body>
-</html>
+{% endblock %}

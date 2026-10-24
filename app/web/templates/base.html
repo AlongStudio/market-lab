@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}market-lab{% endblock %}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
+         background: #f5f6f8; color: #1f2329; }
+  header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px;
+           display: flex; justify-content: space-between; align-items: center; }
+  header .nav { display: flex; align-items: center; gap: 18px; }
+  header .nav a { color: #cfd3d9; font-size: 14px; text-decoration: none; }
+  header .nav a:hover { color: #fff; }
+  .nav a.active { color: #fff; font-weight: 500; }
+  header .logout { background: transparent; border: 1px solid #5a5f66; color: #cfd3d9;
+                   padding: 5px 12px; font-size: 13px; }
+  header .logout:hover { background: #2c3138; }
+  .wrap { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+  section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .muted { color: #8a8f99; font-size: 12px; }
+</style>
+{% block page_style %}{% endblock %}
+</head>
+<body>
+<header><span>market-lab {% block page_title %}{% endblock %}</span>
+  <div class="nav">
+    {% for item in nav_items %}
+    <a href="{{ item.href }}"{% if item.active %} class="active"{% endif %}>{{ item.label }}</a>
+    {% endfor %}
+    <button class="logout" onclick="logout()">退出登录</button>
+  </div>
+</header>
+<div class="wrap">{% block content %}{% endblock %}</div>
+<script>
+function getToken() { return localStorage.getItem('token') || ''; }
+
+function gotoLogin() {
+  localStorage.removeItem('token');
+  location.replace('/login');
+}
+
+// 无 token 直接回登录页,避免空跑一圈请求
+if (!getToken()) gotoLogin();
+
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, {
+    'Authorization': 'Bearer ' + getToken(),
+  });
+  const r = await fetch(path, opts);
+  if (r.status === 401) { gotoLogin(); throw new Error('未授权'); }
+  // 滑动续期:服务端每次有效响应都回发新 token
+  const refreshed = r.headers.get('X-Refresh-Token');
+  if (refreshed) localStorage.setItem('token', refreshed);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function logout() { gotoLogin(); }
+</script>
+{% block page_script %}{% endblock %}
+</body>
+</html>

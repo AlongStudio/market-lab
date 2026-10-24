@@ -1,24 +1,8 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>market-lab 策略管理</title>
+{% extends "base.html" %}
+{% block title %}market-lab 策略管理{% endblock %}
+{% block page_title %}策略管理{% endblock %}
+{% block page_style %}
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0;
-         background: #f5f6f8; color: #1f2329; }
-  header { background: #1f2329; color: #fff; padding: 14px 24px; font-size: 18px;
-           display: flex; justify-content: space-between; align-items: center; }
-  header .nav { display: flex; align-items: center; gap: 18px; }
-  header .nav a { color: #cfd3d9; font-size: 14px; text-decoration: none; }
-  header .nav a:hover { color: #fff; }
-  header .logout { background: transparent; border: 1px solid #5a5f66; color: #cfd3d9;
-                   padding: 5px 12px; font-size: 13px; }
-  header .logout:hover { background: #2c3138; }
-  .wrap { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
-  section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px;
-            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
@@ -32,7 +16,6 @@
   button.ghost:hover { background: #f5f8ff; }
   button.danger { background: #fff; color: #c62828; border: 1px solid #f0c0c0; }
   button.danger:hover { background: #ffebee; }
-  .muted { color: #8a8f99; font-size: 12px; }
   .err { color: #c62828; font-size: 12px; word-break: break-all; white-space: pre-wrap; }
   .card-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
   .card-head .title { font-size: 14px; font-weight: 600; }
@@ -56,21 +39,8 @@
   dialog textarea { resize: vertical; }
   .row-actions { display: flex; gap: 8px; }
 </style>
-</head>
-<body>
-<header><span>market-lab 策略管理</span>
-  <div class="nav">
-    <a href="/dashboard">管理面板</a>
-    <a href="/kline">K线查询</a>
-    <a href="/analysis">分析选股</a>
-    <a href="/analysis/strategies" style="color:#fff;font-weight:500">策略管理</a>
-    <a href="/analysis/run">策略执行</a>
-    <a href="/analysis/test-runs">试跑历史</a>
-    <a href="/settings">运行设置</a>
-    <button class="logout" onclick="logout()">退出登录</button>
-  </div>
-</header>
-<div class="wrap">
+{% endblock %}
+{% block content %}
   <section>
     <div class="card-head">
       <span class="title">分析选股策略</span>
@@ -90,53 +60,29 @@
       <tbody id="strategyBody"></tbody>
     </table>
   </section>
-</div>
 
-<dialog id="editDialog">
-  <div class="modal-head" id="dlgTitle">新建策略</div>
-  <div class="modal-body">
-    <label>名称
-      <input type="text" id="f_name" placeholder="如:缺口放大">
-    </label>
-    <label>描述
-      <textarea id="f_desc" rows="2" placeholder="策略说明,可选"></textarea>
-    </label>
-    <label>result_sql (以 SELECT 开头,用 :trading_day 引用基准日,首列必须为 stock_code)
-      <textarea id="f_sql" rows="14" placeholder="SELECT stock_code, stock_name FROM stocks WHERE ..."></textarea>
-    </label>
-    <div id="sqlErr" class="err"></div>
-  </div>
-  <div class="modal-foot">
-    <button class="ghost" id="cancelBtn">取消</button>
-    <button id="saveBtn">保存</button>
-  </div>
-</dialog>
-
+  <dialog id="editDialog">
+    <div class="modal-head" id="dlgTitle">新建策略</div>
+    <div class="modal-body">
+      <label>名称
+        <input type="text" id="f_name" placeholder="如:缺口放大">
+      </label>
+      <label>描述
+        <textarea id="f_desc" rows="2" placeholder="策略说明,可选"></textarea>
+      </label>
+      <label>result_sql (以 SELECT 开头,用 :trading_day 引用基准日,首列必须为 stock_code)
+        <textarea id="f_sql" rows="14" placeholder="SELECT stock_code, stock_name FROM stocks WHERE ..."></textarea>
+      </label>
+      <div id="sqlErr" class="err"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="ghost" id="cancelBtn">取消</button>
+      <button id="saveBtn">保存</button>
+    </div>
+  </dialog>
+{% endblock %}
+{% block page_script %}
 <script>
-function getToken() { return localStorage.getItem('token') || ''; }
-
-function gotoLogin() {
-  localStorage.removeItem('token');
-  location.replace('/login');
-}
-
-if (!getToken()) gotoLogin();
-
-async function api(path, opts) {
-  opts = opts || {};
-  opts.headers = Object.assign({}, opts.headers, {
-    'Authorization': 'Bearer ' + getToken(),
-  });
-  const r = await fetch(path, opts);
-  if (r.status === 401) { gotoLogin(); throw new Error('未授权'); }
-  const refreshed = r.headers.get('X-Refresh-Token');
-  if (refreshed) localStorage.setItem('token', refreshed);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-function logout() { gotoLogin(); }
-
 function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -322,5 +268,4 @@ async function loadWithCache() {
 
 loadWithCache();
 </script>
-</body>
-</html>
+{% endblock %}
