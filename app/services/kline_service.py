@@ -131,13 +131,17 @@ def upsert_kline(
     # 末日 bar 校验放在写入后:写入后表里仍无 (stock_code, end_date) 行,
     # 才说明源 rows 缺末日行(9-30 部分写入形态)。若放写入前,首跑任务表里
     # 必无该行,rows 完整也会误抛 → FAILED 死循环。
-    _assert_end_bar(db, table_key, table, stock_code, end_date)
+    last_row_date = max(
+        (r["trading_date"] for r in rows if r["trading_date"] is not None),
+        default=None,
+    )
+    _assert_end_bar(db, table_key, table, stock_code, end_date, last_row_date)
     return len(params)
 
 
 # ── 末日 bar 校验(T7 P2):源未发布竞态防护 ──────────────────────────
 def _assert_end_bar(db: Session, table_key: str, table: str,
-                    stock_code: str, end_date) -> None:
+                    stock_code: str, end_date, last_row_date) -> None:
     """end_date 为已过去的交易日但目标表无该行 → 抛错走 FAILED 重试。
 
     9-30 实测:sina 节前大流量日 16:31~16:46 才发布当日日K,16:10 生成的
@@ -152,6 +156,15 @@ def _assert_end_bar(db: Session, table_key: str, table: str,
         刷新,次日窗口推进自然补齐;抛错只会制造 FAILED→requeue 循环,
         放大 1213 死锁税。daily 始终校验(当日完整性是 dashboard 核心承诺)
       - 点查为主键点查,代价可忽略(与 C7-B minute 防护同构)
+
+    停牌感知(T8 P1c):end_date 行缺失时区分「源晚发布竞态」与「股票未交易」。
+    竞态只可能发生在 end_date=今天的当天几小时内(9-30 实测 sina 16:31~16:46
+    发布完成);跨了天的重跑任务若仍缺末日行,只可能是股票没交易:
+      - end_date < 今天 → WARN END_BAR_HALT 放行(跨天重跑无发布竞态)
+      - end_date == 今天 且 (last_row_date, end_date] 间 >=2 个交易日 →
+        股票>=2 交易日没交易=停牌,WARN 放行
+      - 其余缺行 → raise(源可能晚发布,重试会等到——9-30 竞态防护保留)
+      - last_row_date=None(rows 全被 trading_date 过滤)→ 维持 raise
     """
     if end_date is None or end_date > date.today():
         return
@@ -172,6 +185,26 @@ def _assert_end_bar(db: Session, table_key: str, table: str,
         {"c": stock_code, "d": end_date},
     ).first()
     if not row:
+        if last_row_date is None:
+            raise RuntimeError(
+                f"末日bar缺失(源未发布?): {table} {stock_code} {end_date}")
+        if end_date < date.today():
+            logger.warning(
+                "END_BAR_HALT %s %s 窗口末日 %s 无行,最后数据 %s,"
+                "跨天重跑无发布竞态,判停牌/合法空洞放行",
+                table_key, stock_code, end_date, last_row_date)
+            return
+        gap = db.execute(
+            text("SELECT COUNT(*) FROM trade_calendar "
+                 "WHERE trade_date > :lr AND trade_date <= :ed"),
+            {"lr": last_row_date, "ed": end_date},
+        ).scalar()
+        if gap >= 2:
+            logger.warning(
+                "END_BAR_HALT %s %s 末日 %s 无行,最后数据 %s 距末日 %d 个交易日,"
+                "判停牌放行",
+                table_key, stock_code, end_date, last_row_date, gap)
+            return
         raise RuntimeError(
             f"末日bar缺失(源未发布?): {table} {stock_code} {end_date}")
 
