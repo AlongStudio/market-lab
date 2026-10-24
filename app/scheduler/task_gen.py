@@ -43,6 +43,52 @@ def _active_stocks(db: Session) -> list[str]:
     return [r[0] for r in rows]
 
 
+# ── 停牌股新鲜度口径(T8 P1a) ─────────────────────────────────────────
+# 停牌基线 = 最后交易日落后 >= 10 个交易日(约两周)。A股常规停牌(公告/重组
+# 1~5 天)不该被过滤(窗口任务仍有效,P1c 已让它们优雅 SUCCESS);>=10 交易日
+# 视为长期停牌,停止派发新任务、僵尸任务转终态。复牌由每日探针检测。
+# akshare 股票清单不反映停牌(stocks 全 NORMAL),唯一可靠信号是
+# daily_kline 的最后交易日,经 stock_stats 物化列零扫描取用。
+_STALE_TRADE_DAYS = 10
+
+
+def _stale_cutoff(db: Session) -> date | None:
+    """近 N 个交易日中最早的一天,停牌股判定基线:daily_max_date < cutoff。
+
+    日历不足 N 条(空库/新部署)返回 None,此时视全部为活跃(防御性)。
+    """
+    rows = db.execute(
+        text("SELECT trade_date FROM trade_calendar WHERE trade_date <= CURDATE() "
+             "ORDER BY trade_date DESC LIMIT :n"),
+        {"n": _STALE_TRADE_DAYS},
+    ).scalars().all()
+    if len(rows) < _STALE_TRADE_DAYS:
+        return None
+    return min(rows)
+
+
+def stale_stock_codes(db: Session) -> set[str]:
+    """停牌股集合:daily_kline 有历史但最后交易日 < cutoff。
+
+    用 stock_stats.daily_max_date 物化列(13min 刷新),零扫描。
+    LEFT JOIN 语义:stock_stats 无行或 daily_max_date 为 NULL(新股/未采集)
+    → 不算停牌——不能把「没数据的股票」误杀,新股必须先拿到任务才有数据。
+    """
+    cutoff = _stale_cutoff(db)
+    if cutoff is None:
+        return set()
+    rows = db.execute(
+        text(
+            "SELECT s.stock_code FROM stocks s "
+            "LEFT JOIN stock_stats st ON st.stock_code = s.stock_code "
+            "WHERE s.status='NORMAL' "
+            "AND st.daily_max_date IS NOT NULL AND st.daily_max_date < :cutoff"
+        ),
+        {"cutoff": cutoff},
+    ).scalars().all()
+    return set(rows)
+
+
 def _backfill_start() -> date:
     """回填起点:BACKFILL_YEARS=0 走很早的日期(全历史),否则今天往前推 N 年。"""
     if settings.BACKFILL_YEARS <= 0:
@@ -108,9 +154,15 @@ def generate_backfill(db: Session) -> int:
 
 
 def generate_daily_incremental(db: Session, days_back: int = 7) -> int:
-    """每日收盘后:为全 A 股生成"拉最近 days_back 天"的日K三口径增量任务。"""
-    stocks = _active_stocks(db)
-    if not stocks:
+    """每日收盘后:活跃股生成"拉最近 days_back 天"的日K三口径增量任务。
+
+    停牌股(最后交易日落后>=10交易日)只派 1 条 adjust='' 探针任务(窗口
+    不变):空返回走 ZERO_WRITE SUCCESS(T5 真空语义,合法);复牌后探针
+    写入新 daily 行,stock_stats.daily_max_date 追上,次日恢复全量派发。
+    """
+    stale = stale_stock_codes(db)
+    stocks = [c for c in _active_stocks(db) if c not in stale]
+    if not stocks and not stale:
         return 0
     end = date.today()
     start = end - timedelta(days=days_back)
@@ -121,6 +173,11 @@ def generate_daily_incremental(db: Session, days_back: int = 7) -> int:
                 "stock_code": code, "data_type": "daily", "adjust": adj,
                 "date_start": start, "date_end": end,
             })
+    for code in sorted(stale):
+        params.append({
+            "stock_code": code, "data_type": "daily", "adjust": "",
+            "date_start": start, "date_end": end,
+        })
     return _chunked_insert(db, params)
 
 
@@ -135,8 +192,11 @@ def generate_weekly_monthly_incremental(db: Session) -> int:
     周一当天生成的 weekly 窗口 date_start=date_end(单日桶),LOCAL_AGG
     聚合同样正确。周月K无在线源时由 LOCAL_AGG 兜底落库(T5 §3);
     本函数只管造任务,adjust 口径与 _BACKFILL_COMBOS 存量一致(周月K仅 "")。
+    停牌股不生成(T8 P1a):停牌股窗口内 LOCAL_AGG 从 daily 聚合必空 →
+    返回空 raise → 永久 FAILED,是 weekly/monthly 僵尸任务的源头。
     """
-    stocks = _active_stocks(db)
+    stale = stale_stock_codes(db)
+    stocks = [c for c in _active_stocks(db) if c not in stale]
     if not stocks:
         return 0
     today = date.today()
@@ -156,11 +216,14 @@ def generate_weekly_monthly_incremental(db: Session) -> int:
 
 
 def generate_minute_daily(db: Session) -> int:
-    """每交易日收盘后:为全 A 股生成分钟K累积任务(近5日窗口)。
+    """每交易日收盘后(15:35,见 scheduler gen_minute):为活跃股生成分钟K
+    累积任务(近5日窗口),当日 bar 当晚落库。
 
     分钟任务无日期区间(akshare 固定回溯近5日),date_start/end 用今天占位以满足唯一键。
+    停牌股不生成(T8 P1a):分钟K对停牌股无意义,省 ~19 条/日。
     """
-    stocks = _active_stocks(db)
+    stale = stale_stock_codes(db)
+    stocks = [c for c in _active_stocks(db) if c not in stale]
     if not stocks:
         return 0
     today = date.today()
