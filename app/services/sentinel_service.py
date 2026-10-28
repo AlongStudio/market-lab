@@ -13,6 +13,8 @@ sentinel_report 表把每次检查的 OK/WARN/CRIT 状态 + 四新鲜度 + 明�
   3. weekly 新鲜度:MAX(trading_date)(周五 18:00 后 ≥ 本周;否则 ≥ 上周)
   4. monthly 新鲜度:MAX(trading_date)(月末 18:00 后 ≥ 本月;否则 ≥ 上月)
   5. 假成功检测:近 15min SUCCESS 数 vs 对应数据表新增行数
+     (新增行数下限统一取窗口起点日期——minute 的 bar 业务时间≤15:00 而
+      落库在收盘后,完整时间戳口径会在采集窗口期规律性误报)
      SUCCESS>100 且新增=0 → CRIT
   6. 熔断器状态:OPEN 源列表 + 持续 >30min → WARN
 
@@ -216,14 +218,19 @@ def _check_fake_success(db: Session, now: datetime) -> dict:
             {"d": window_start.date()},
         ).scalar() or 0
         new_rows[dt] = n
-    # minute: 32 分表合计 minute_time >= window_start,UNION ALL 单次查询
+    # minute: 32 分表合计 minute_time >= 窗口起点日期零点,UNION ALL 单次查询
+    # 口径说明:bar 的 minute_time 是业务时间(≤15:00),落库发生在 15:35~18:37
+    # (T8 后收盘后批量采集)。若用完整 window_start 时间戳作下限,落库高峰期
+    # bar 业务时间恒小于窗口起点 → new_rows 恒 0 → 规律性误报。对齐 daily 的
+    # date() 下限后,"当日窗口内已落库的 bar"始终可被统计到。
+    minute_lower = datetime.combine(window_start.date(), datetime.min.time())
     minute_tables = all_minute_tables()
     union = " UNION ALL ".join(
         f"SELECT COUNT(*) AS cnt FROM {t} WHERE minute_time >= :s" for t in minute_tables
     )
     minute_n = db.execute(
         text(f"SELECT COALESCE(SUM(cnt), 0) FROM ({union}) AS s"),
-        {"s": window_start},
+        {"s": minute_lower},
     ).scalar() or 0
     new_rows["minute"] = minute_n
 
