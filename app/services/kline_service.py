@@ -14,13 +14,14 @@
 (qfq/hfq 月内/周内基准一致;volume/turnover 可加和)。
 """
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.akshare_client import client
+from app.db.minute_shard import minute_table_of
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,21 @@ def upsert_kline(
     return len(params)
 
 
+def _minute_bars_on(db: Session, stock_code: str, d: date) -> int:
+    """该股 d 日(自然日)的分钟 bar 数。分表路由 + 主键前缀扫描。
+
+    复牌证据判据(T11):分表行数是数据层事实;不查 minute 任务状态/stock_stats
+    (采集层信号会被同一 bug 污染,stock_stats refreshed 有滞后且复牌日
+    daily_max_date 不更新——用被污染的证据判案)。
+    """
+    table = minute_table_of(stock_code)
+    return db.execute(
+        text(f"SELECT COUNT(*) FROM {table} "
+             f"WHERE stock_code = :c AND minute_time >= :d0 AND minute_time < :d1"),
+        {"c": stock_code, "d0": d, "d1": d + timedelta(days=1)},
+    ).scalar() or 0
+
+
 # ── 末日 bar 校验(T7 P2):源未发布竞态防护 ──────────────────────────
 def _assert_end_bar(db: Session, table_key: str, table: str,
                     stock_code: str, end_date, last_row_date) -> None:
@@ -165,6 +181,10 @@ def _assert_end_bar(db: Session, table_key: str, table: str,
         股票>=2 交易日没交易=停牌,WARN 放行
       - 其余缺行 → raise(源可能晚发布,重试会等到——9-30 竞态防护保留)
       - last_row_date=None(rows 全被 trading_date 过滤)→ 维持 raise
+    复牌堵漏(T11):HALT 放行加「当日无交易」前提——daily 的两处放行前查
+    当日(=end_date)分钟 bar,>0 即有真实交易,判复牌 raise(FAILED→requeue
+    重试)。weekly/monthly 不设防(LOCAL_AGG 从 daily 聚合,层级下游,
+    daily 修复后次日窗口自然补齐)。
     """
     if end_date is None or end_date > date.today():
         return
@@ -189,6 +209,12 @@ def _assert_end_bar(db: Session, table_key: str, table: str,
             raise RuntimeError(
                 f"末日bar缺失(源未发布?): {table} {stock_code} {end_date}")
         if end_date < date.today():
+            # 复牌证据(daily):窗口末日有真实交易(分钟bar>0)则缺口不是停牌,
+            # 堵假成功;weekly/monthly 层级下游不设防(§1.5.4)
+            if table_key == "daily" and _minute_bars_on(db, stock_code, end_date) > 0:
+                raise RuntimeError(
+                    f"末日bar缺失(复牌?): {table} {stock_code} {end_date} "
+                    f"当日分钟bar>0但daily无行")
             logger.warning(
                 "END_BAR_HALT %s %s 窗口末日 %s 无行,最后数据 %s,"
                 "跨天重跑无发布竞态,判停牌/合法空洞放行",
@@ -200,6 +226,11 @@ def _assert_end_bar(db: Session, table_key: str, table: str,
             {"lr": last_row_date, "ed": end_date},
         ).scalar()
         if gap >= 2:
+            # 此分支仅 daily 可达(weekly/monthly 当日已 END_BAR_DEFER 早退)
+            if _minute_bars_on(db, stock_code, end_date) > 0:
+                raise RuntimeError(
+                    f"末日bar缺失(复牌?): {table} {stock_code} {end_date} "
+                    f"当日分钟bar>0但daily无行")
             logger.warning(
                 "END_BAR_HALT %s %s 末日 %s 无行,最后数据 %s 距末日 %d 个交易日,"
                 "判停牌放行",

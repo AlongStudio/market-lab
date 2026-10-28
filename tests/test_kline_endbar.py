@@ -117,23 +117,27 @@ def test_daily_today_gap1_raises():
 
 
 def test_daily_today_gap2_warns(caplog):
-    """A5-2: daily 末日=今天,距最后数据 >=2 交易日(gap=2)→ 停牌,放行。"""
-    db = _db(_some_row(), None, scalars=[2])
+    """A5-2: daily 末日=今天,距最后数据 >=2 交易日(gap=2)→ 停牌,放行。
+
+    T11 后放行前多一次当日分钟 bar 判据(bars=0=当日无交易,维持停牌放行)。"""
+    db = _db(_some_row(), None, scalars=[2, 0])
     kline_service._assert_end_bar(
         db, "daily", "daily_kline", "sh600519",
         date.today(), date.today() - timedelta(days=3))
-    assert db.execute.call_count == 3  # 日历 + 表点查 + gap 计数
+    assert db.execute.call_count == 4  # 日历 + 表点查 + gap 计数 + 分钟bar判据
 
 
 def test_daily_past_missing_warns(caplog):
     """A5-3: end<今天 缺末日行,rows 有更早数据 → 跨天重跑无发布竞态,
-    判停牌/合法空洞 WARN 放行(典型:SH601326 停牌于 10-21 的重跑任务)。"""
-    db = _db(_some_row(), None)
+    判停牌/合法空洞 WARN 放行(典型:SH601326 停牌于 10-21 的重跑任务)。
+
+    T11 后 daily 放行前多一次当日分钟 bar 判据(bars=0 维持放行)。"""
+    db = _db(_some_row(), None, scalars=[0])
     with caplog.at_level("WARNING"):
         kline_service._assert_end_bar(
             db, "daily", "daily_kline", "sh600519", END, date(2026, 9, 29))
     assert "END_BAR_HALT" in caplog.text
-    assert db.execute.call_count == 2  # 日历 + 表点查,无 gap 查询
+    assert db.execute.call_count == 3  # 日历 + 表点查 + 分钟bar判据,无 gap 查询
 
 
 def test_weekly_past_missing_warns():
@@ -172,7 +176,8 @@ def test_upsert_partial_rows_past_warns(monkeypatch, caplog):
     rows = [_bar(date(2026, 9, d)) for d in (23, 24, 25, 28, 29)]
     monkeypatch.setattr(kline_service.client, "fetch_kline",
                         lambda *a, **k: rows)
-    db = _db(_some_row(), None)  # 日历有 9-30;表无 9-30 行
+    # 日历有 9-30;表无 9-30 行;T11 分钟bar判据=0(当日无交易,维持放行)
+    db = _db(_some_row(), None, scalars=[0])
     with caplog.at_level("WARNING"):
         n = kline_service.upsert_kline(
             db, "daily", "sh600519", "600519", "",
