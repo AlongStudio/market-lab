@@ -5,10 +5,11 @@
 - 统一"按中文列名取值 + 缺列容错":列名映射见 columns.py,缺列取 None,
   绝不依赖列顺序(日K实测列序是 开-收-高-低)。
 - 返回规范化的 list[dict](裸 Python 类型),不把 DataFrame 透传给上层。
-- wall-clock 超时:akshare 底层经 requests 外呼但不暴露 timeout 参数,
-  socket.setdefaulttimeout 在某些代码路径(DNS、SSL 握手部分阶段)不可靠。
-  用 ThreadPoolExecutor + future.result(timeout) 做真正的 wall-clock 收割,
-  超时后放弃 future,akshare 线程自行消亡(GIL 最终释放)。
+- 超时双保险(T12 R1):第一道 net_guard 的 requests 默认 read timeout 60s
+  (app/net_guard.py monkey-patch HTTPAdapter,akshare 内部自建 Session
+  不传 timeout),线程正常回收;第二道 wall-clock 收割(AKSHARE_TIMEOUT+5s)
+  兜底 DNS/SSL 等 requests 外路径,超时后放弃 future——该线程永不回收,
+  故只作兜底,参数须大于第一道。
 - 熔断器:连续失败达阈值后短路所有外呼,避免远端不可达时 worker 逐个卡死。
   冷却期满转 HALF_OPEN 后只放行 1 个探针请求,探针成功才恢复 CLOSED,
   防止并发任务批量涌入试探造成"开闸-涌入-再开闸"空转。
@@ -39,6 +40,12 @@ logger = logging.getLogger(__name__)
 socket.setdefaulttimeout(settings.AKSHARE_TIMEOUT)
 
 _ak_pool = ThreadPoolExecutor(max_workers=24, thread_name_prefix="akshare-call")
+
+# _ak_pool 在途上限(T12 R3):满即立即失败走 fallback,杜绝无界队列无限
+# 堆积(Python 3.11 ThreadPoolExecutor 构造函数无 queue 参数,有界化只能
+# 在调用方实现)。持槽 ⟺ 已 submit 进池(执行或排队中)。
+_AK_INFLIGHT_MAX = 48
+_ak_inflight = threading.Semaphore(_AK_INFLIGHT_MAX)
 
 T = TypeVar("T")
 
@@ -154,16 +161,19 @@ class _RateLimiter:
 
     def acquire(self) -> None:
         self._sync_qps()
-        with self._lock:
-            now = time.monotonic()
-            self._tokens = min(self._capacity, self._tokens + (now - self._last) * self._qps)
-            self._last = now
-            if self._tokens < 1:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._tokens = min(
+                    self._capacity, self._tokens + (now - self._last) * self._qps)
+                self._last = now
+                if self._tokens >= 1:
+                    self._tokens -= 1
+                    return
                 wait = (1 - self._tokens) / self._qps
-                time.sleep(wait)
-                self._tokens = 0
-            else:
-                self._tokens -= 1
+            # 锁外睡眠(T12 R3):持锁 sleep 会把并发 worker 排成串行锁车队
+            # (QPS 调到护栏下限 0.1 时单次持锁睡 10s×64),睡醒重查
+            time.sleep(wait)
 
 
 _limiter = _RateLimiter(settings.AKSHARE_QPS)
@@ -367,6 +377,14 @@ def _call_with_timeout(
     """
     _breaker.acquire()
     _limiter.acquire()
+    # 排队上限(T12 R3):满即立即失败走 fallback,不做无限排队。
+    # release 对齐 future.result 生命周期(含超时 abandon)。
+    if not _ak_inflight.acquire(blocking=False):
+        _record_failure(source)
+        raise RuntimeError(
+            f"akshare 池排队已满({_AK_INFLIGHT_MAX} 在途),"
+            f"{getattr(fn, '__name__', fn)} 立即失败"
+        )
     future = _ak_pool.submit(fn, *args, **kwargs)
     try:
         result = future.result(timeout=settings.AKSHARE_TIMEOUT + 5)
@@ -383,6 +401,8 @@ def _call_with_timeout(
     except Exception:
         _record_failure(source)
         raise
+    finally:
+        _ak_inflight.release()
 
 
 def _fetch_with_fallback(

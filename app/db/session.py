@@ -5,8 +5,10 @@ from app.config import settings
 
 engine = create_engine(
     settings.db_url,
-    pool_size=10,
-    max_overflow=20,
+    # T12 R4:池容量对齐 offhour 64 worker(25+40=65),消灭并发高峰
+    # pool_timeout(30s)排队造成的假性慢任务
+    pool_size=25,
+    max_overflow=40,
     pool_pre_ping=True,
     pool_recycle=3600,
     connect_args={"charset": "utf8mb4"},

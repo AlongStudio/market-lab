@@ -4,6 +4,9 @@
 有效 token 每次响应滑动续期(X-Refresh-Token 头),前端据此更新本地 token。
 """
 import logging
+import os
+import socket
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import auth
+from app import net_guard  # noqa: F401  T12 R1b: requests 默认 timeout 注入
 from app.akshare_client.client import _FETCHERS_BY_TYPE, _source_breakers
 from app.api.routes import router as api_router
 from app.config import settings
@@ -21,6 +25,10 @@ from app.db.session import engine, get_session
 from app.scheduler import task_runner
 from app.scheduler.scheduler import build_scheduler, shutdown_event, _pool
 from app.web.routes import router as web_router
+
+# T12 R1a: 裸 socket 全局兜底 60s(requests 路径不生效由 net_guard 管;
+# client.py 的 setdefaulttimeout(AKSHARE_TIMEOUT=60) 与此同值)
+socket.setdefaulttimeout(60)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -91,28 +99,37 @@ async def lifespan(app: FastAPI):
     _logger.info("APScheduler started")
     _log_source_availability()
     yield
-    # 优雅关闭 drain(T6 §2.1 C1):SIGTERM 后必须 15s 内退出,且不悬空在途任务状态。
-    # 顺序:① 停调度器(不再领新任务) → ② set shutdown_event 让 _tick 早退 →
-    # ③ 等 _pool 在途任务归零(最多 15s) → ④ 超时强杀(cancel_futures=True) →
-    # ⑤ 关 DB 引擎。未跑完的 RUNNING 任务留待下次启动 reset_running_on_startup 回收。
-    shutdown_event.set()
-    if _scheduler:
-        _scheduler.shutdown(wait=False)
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        # _threads 是 ThreadPoolExecutor 私有属性,CPython 各版本稳定;
-        # 用 all(is_alive=False) 判空,避免依赖 future 私有集合
-        threads = list(_pool._threads) if _pool._threads else []
-        if not threads or all(not t.is_alive() for t in threads):
-            break
-        time.sleep(0.5)
-    else:
-        _pool.shutdown(wait=False, cancel_futures=True)
-        _logger.warning("drain 超时,强制取消剩余任务")
+    # 进程级保险丝(T12 R5):drain 逻辑自身挂死(9-29 形态)时 25s 强制退出。
+    # 42 专用退出码:与 ExitCode=0 神秘自退永久区分,不污染 R6 取证;
+    # uvicorn --timeout-graceful-shutdown 20 管连接层,本保险丝管 lifespan 层。
+    _fuse = threading.Timer(25, os._exit, args=(42,))
+    _fuse.daemon = True
+    _fuse.start()
     try:
-        engine.dispose()
-    except Exception as e:
-        _logger.warning("DB 引擎 dispose 失败(进程即将退出,可忽略): %s", e)
+        # 优雅关闭 drain(T6 §2.1 C1):SIGTERM 后必须 15s 内退出,且不悬空在途任务状态。
+        # 顺序:① 停调度器(不再领新任务) → ② set shutdown_event 让 _tick 早退 →
+        # ③ 等 _pool 在途任务归零(最多 15s) → ④ 超时强杀(cancel_futures=True) →
+        # ⑤ 关 DB 引擎。未跑完的 RUNNING 任务留待下次启动 reset_running_on_startup 回收。
+        shutdown_event.set()
+        if _scheduler:
+            _scheduler.shutdown(wait=False)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            # _threads 是 ThreadPoolExecutor 私有属性,CPython 各版本稳定;
+            # 用 all(is_alive=False) 判空,避免依赖 future 私有集合
+            threads = list(_pool._threads) if _pool._threads else []
+            if not threads or all(not t.is_alive() for t in threads):
+                break
+            time.sleep(0.5)
+        else:
+            _pool.shutdown(wait=False, cancel_futures=True)
+            _logger.warning("drain 超时,强制取消剩余任务")
+        try:
+            engine.dispose()
+        except Exception as e:
+            _logger.warning("DB 引擎 dispose 失败(进程即将退出,可忽略): %s", e)
+    finally:
+        _fuse.cancel()
 
 
 app = FastAPI(title="market-lab", lifespan=lifespan)

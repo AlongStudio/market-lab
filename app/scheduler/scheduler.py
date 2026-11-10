@@ -9,7 +9,7 @@ tick 间隔运行时可调(runtime_config.tick_interval_sec,5s~60s):APScheduler 
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -35,10 +35,31 @@ shutdown_event = threading.Event()
 
 _last_claim_ts = 0.0  # 上次真正领取任务的时刻(monotonic)
 
+# 在途任务数(submit +1 / _run_tracked finally -1):tick 背压用,
+# 防止 5s tick 在慢任务期无限堆叠领取(T12 R2)
+_inflight = 0
+_inflight_lock = threading.Lock()
+
+
+def _run_tracked(t: dict) -> None:
+    """run_task 包装:finally 归还 in-flight 名额(异常也归还)。"""
+    global _inflight
+    try:
+        task_runner.run_task(t)
+    finally:
+        with _inflight_lock:
+            _inflight -= 1
+
 
 def _tick() -> None:
-    """执行循环:按当前时段策略领一批任务并发执行(严格隔离 data_type)。"""
-    global _last_claim_ts
+    """执行循环:按当前时段策略领一批任务并发执行(严格隔离 data_type)。
+
+    T12 R2:提交即返回,不同步等 future——tick 线程永不被慢任务钉死
+    (旧版串行 f.result 最坏 64×90s,是运行期楔死主链第三环)。任务状态
+    由 run_task 自己落库;卡死任务由 requeue_stale_running 回收 RUNNING。
+    在途背压:领取量 = 策略并发 n - 在途数,≤0 时本轮跳过。
+    """
+    global _last_claim_ts, _inflight
     # 优雅关闭中:不再领新任务,让在途自然完成或被 drain 取消
     if shutdown_event.is_set():
         return
@@ -59,30 +80,28 @@ def _tick() -> None:
         today = date.today()
         trading = meta_service.is_trading_day(db, today)
         data_types, n, prefer_minute, minute_fallback = get_policy(datetime.now(), trading)
+        # 在途背压(T12 R2):只领剩余名额,在途达策略上限时本轮不领
+        with _inflight_lock:
+            room = n - _inflight
+        if room <= 0:
+            return
         tasks = task_runner.claim_tasks(
-            db, limit=n, data_types=data_types, prefer_minute=prefer_minute
+            db, limit=room, data_types=data_types, prefer_minute=prefer_minute
         )
         # offhour 分钟K回退(T6 §2.2):日K组领空后,若开关打开则领 minute 填位。
         # 保隔离:minute 永不与日K组抢 worker,只在日K组空时填位;
         # 开关 false 时 minute_fallback=False,行为与现状零变化。
         if not tasks and minute_fallback:
             logger.info("offhour minute fallback (DAILY_TYPES 队列空)")
-            tasks = task_runner.claim_tasks(db, limit=n, data_types=MINUTE_TYPES)
+            tasks = task_runner.claim_tasks(db, limit=room, data_types=MINUTE_TYPES)
     finally:
         db.close()
     if not tasks:
         return
-    futures = {_pool.submit(task_runner.run_task, t): t for t in tasks}
-    for f, t in futures.items():
-        try:
-            f.result(timeout=settings.TASK_TIMEOUT)
-        except FutureTimeout:
-            # 任务卡死超过 TASK_TIMEOUT:不再阻塞 tick,放任线程靠 socket 超时自行结束。
-            # 该任务的 RUNNING 状态由 requeue_stale_running 兜底回收。
-            logger.warning("task %s exceeded %.0fs, abandoning in tick (stale reset will recover)",
-                           t["id"], settings.TASK_TIMEOUT)
-        except Exception:  # noqa: BLE001 run_task 内已落库 FAILED,这里只防 tick 中断
-            logger.exception("task %s raised in tick", t["id"])
+    with _inflight_lock:
+        _inflight += len(tasks)
+    for t in tasks:
+        _pool.submit(_run_tracked, t)
 
 
 def _refresh_meta() -> None:

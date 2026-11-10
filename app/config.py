@@ -28,10 +28,11 @@ class Settings:
     # 单个数据源连续失败 N 次后跳过该源（熔断该源），尝试下一个
     DATA_SOURCE_FAIL_THRESHOLD = int(os.getenv("DATA_SOURCE_FAIL_THRESHOLD", "3"))
 
-    # 单次 akshare 外呼的 socket 超时(秒),防止远端假死把 worker 线程卡死
-    AKSHARE_TIMEOUT = float(os.getenv("AKSHARE_TIMEOUT", "30"))
-    # 单任务整体执行超时(秒),_tick 用它收割卡死 future,留出余量大于 socket 超时
-    TASK_TIMEOUT = float(os.getenv("TASK_TIMEOUT", "90"))
+    # 单次 akshare 外呼的 wall-clock 收割窗口(秒) = AKSHARE_TIMEOUT + 5。
+    # 须 > net_guard 的 requests read timeout(60s):让 requests 自己先抛
+    # ReadTimeout、线程正常回收;wall-clock abandon(线程永不回收,是三起
+    # 运行期楔死的泄漏源)只作 DNS/SSL 等 requests 外路径的兜底(T12 R1)
+    AKSHARE_TIMEOUT = float(os.getenv("AKSHARE_TIMEOUT", "60"))
     # RUNNING 任务被判定为 stale 的锁定时长(分钟),超过则回收为 PENDING
     STALE_RUNNING_MINUTES = int(os.getenv("STALE_RUNNING_MINUTES", "30"))
 

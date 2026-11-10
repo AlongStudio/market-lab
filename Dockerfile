@@ -15,4 +15,7 @@ COPY migrations ./migrations
 # 监听端口：3000（与代码内实际监听一致，避免端口映射错位）
 EXPOSE 3000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3000"]
+# --timeout-graceful-shutdown: SIGTERM 后连接层 20s 强收(T12 R5,
+# 与 lifespan 内 25s 进程级保险丝 os._exit(42) 双层)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3000", \
+     "--timeout-graceful-shutdown", "20"]
