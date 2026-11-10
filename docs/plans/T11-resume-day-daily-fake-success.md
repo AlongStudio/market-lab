@@ -299,3 +299,15 @@ weekly 已到 10-28(03:17 重投经 LOCAL_AGG 成功);qfq/hfq/monthly 待当日
 
 **未竟项:A7 端到端(真实复牌事件触发 raise→FAILED→requeue→SUCCESS 全链)**
 待下一次自然复牌,届时 grep 日志"复牌"即可收口。
+
+### 6.1 部署后事故:10-29 16:12 容器重启打断 gen_daily(当晚已修复)
+
+16:10 gen_daily 执行中途容器被重启(ExitCode=0,非 OOM,非 auto-deploy——
+当日发版仅 00:40/12:40 两次;根因未定,docker events 已轮转不可考,
+RestartCount=2):daily 任务只生成 458/5575 只股(恰为 2 个 _GEN_CHUNK
+批次),weekly/monthly 生成器零执行 → 当日 daily 覆盖仅 446 股,sentinel
+daily freshness 用 MAX 掩盖缺口(10-01 教训复现)。22:30 手动补跑两个
+生成器(daily 16,742 + weekly/monthly 11,150 行触达,IODKU 幂等),
+PENDING 26,198 条,~6.6k/h 预计 ~4h 清完。**教训:重启打断生成器后,
+MAX 口径的 freshness 不报警,缺口只能靠按日覆盖股数对账发现——
+体检配方第 5 项(板块级 COUNT 对比)必须逐日执行,不能只看 sentinel。**
