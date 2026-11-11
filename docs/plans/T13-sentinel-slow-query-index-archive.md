@@ -127,3 +127,52 @@ DELETE 每批 5 万行,uk_task 幂等)。
    领取顺序(daily 大任务量是否饿死 weekly/monthly)。
 2. PENDING 积压 94,031(11-10 批 49,339 + 11-11 批 44,596),T12 恢复
    后消化中;fake count 窗口内 daily SUCCESS 1,092/15min,吞吐正常。
+
+### 5.3 排查结论(2026-11-11,CC 代码侧勘察,四嫌疑全排除)
+
+| # | 嫌疑 | 结论 | 实锤 |
+|---|---|---|---|
+| 1 | 领取类型过滤掉 weekly | 排除 | concurrency.py `DAILY_TYPES=("daily","weekly","monthly","adjust_factor")`,offhour 领取范围覆盖 |
+| 2 | claim 排序饿死 weekly | 排除 | task_runner.py offhour 走 `ORDER BY id` 无类型偏好;11-02 批 id < 11-10 批,理应先被消化 |
+| 3 | uk_task 冲突去重(假说) | 排除 | V1 L139:uk 五列含 `date_end`——11-03 窗口(end=11-03)与 11-02(end=11-02)不冲突,cron 若跑必生成新任务;且 10-26~28 连续日生成 5,570/日反证 |
+| 4 | 生成器 stale 全量排除 | 排除 | stale_stock_codes 基于 daily 落库口径,daily 消化正常(1,092/15min)不触发 |
+
+- **"11-03~11-08 零新生成"定论**:gen_daily cron 未执行(misfire)。
+  嫌疑 3 排除后,唯一可能就是 16:10 job 没跑——T12 楔死 executor 线程
+  耗尽的级联后果,**非独立 bug**,无代码修复项。11-02 能生成一批对应
+  楔死中的短暂窗口。
+- **"11-02 批 weekly 零执行"未定论**:代码侧无任何机制可解释(id 最小
+  却零领取)。候选真相:(a) 观察口径/时点——94,031 恰好等于 11-10+11-11
+  两批之和,§5.2 统计未含 11-02 批,且 11-10 恢复时点晚、offhour 按 id
+  顺序消化,11-11 观察时可能未轮到;(b) 状态残留——实际 status 非
+  PENDING(RUNNING 僵尸循环/SKIPPED)。需 NAS 取证定论(下方 SQL,
+  全部只读):
+
+```sql
+-- ① 11-02 批 weekly 状态全景(status 分布 + id 范围 + locked/updated)
+SELECT status, COUNT(*), MIN(id), MAX(id), MIN(locked_at), MAX(updated_at)
+FROM fetch_task WHERE data_type='weekly' AND date_start='2026-11-02' GROUP BY status;
+
+-- ② weekly 任务生成时间线(验证 11-03~11-08 零生成)
+SELECT date_end, COUNT(*), MIN(created_at) FROM fetch_task
+WHERE data_type='weekly' AND created_at >= '2026-10-25'
+GROUP BY date_end ORDER BY date_end;
+
+-- ③ 11-02 批是否被领取过(locked_at/updated_at/retry 有无变化)
+SELECT id, status, retry_count, locked_at, updated_at, LEFT(last_error,80)
+FROM fetch_task WHERE data_type='weekly' AND date_start='2026-11-02'
+ORDER BY id LIMIT 20;
+
+-- ④ PENDING 池按批次分布(对账 94,031 口径是否漏计 11-02 批)
+SELECT DATE(created_at) d, data_type, COUNT(*) FROM fetch_task
+WHERE status='PENDING' GROUP BY d, data_type ORDER BY d;
+
+-- ⑤ weekly_kline 落库末端(11-10 恢复后 weekly 是否已恢复执行)
+SELECT trading_date, COUNT(*) FROM weekly_kline
+WHERE trading_date >= '2026-10-25' GROUP BY trading_date ORDER BY trading_date;
+```
+
+- **处置分叉**:④ 显示 11-02 批确在 PENDING 且从未被领取(id 最小)
+  → claim 路径疑似新 bug,再深挖;①③ 显示已被领取/消化中/FAILED
+  → 按 T12 级联后果结案,weekly 10-29~11-10 缺口待积压清完后用
+  历史/增量生成器补窗口(生成器幂等,uk_task 兜底)。
